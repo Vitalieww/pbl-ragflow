@@ -13,10 +13,13 @@ This repository contains a project that mixes frontend and backend code. Based o
 These are generic instructions — replace paths/commands with the actual project structure.
 
 1. Clone the repo
+   ```bash
    git clone https://github.com/Vitalieww/pbl-ragflow.git
    cd pbl-ragflow
-2. [Secret]
-3. Open the app in your browser at the configured port (e.g., http://localhost:3000 or http://localhost:5000)
+   ```
+2. Install the requirements
+3. Set .env variables 
+4. Open the app in your browser at the configured port 
 
 ## Configuration
 
