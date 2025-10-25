@@ -25,3 +25,6 @@ instance/
 # Private keys
 *.pem
 .env
+
+# Private Info
+workout_stats/
