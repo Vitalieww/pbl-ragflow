@@ -2,18 +2,15 @@ from flask import Flask, render_template, Response, request, jsonify, session
 from openai import OpenAI
 from ragflow_sdk import RAGFlow
 import json
+import os
 import threading
 import requests
 import mysql.connector
 from mysql.connector import Error
 import uuid
 import time
-from datetime import datetime
-from dotenv import load_dotenv
-load_dotenv()
-
-import os
-
+from datetime import datetime, timedelta
+import re
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -32,6 +29,10 @@ MYSQL_CONFIG = {
     'password': 'infini_rag_flow'
 }
 
+# Create directory for workout stats JSON files
+STATS_DIR = "workout_stats"
+os.makedirs(STATS_DIR, exist_ok=True)
+
 client = OpenAI(api_key=API_KEY, base_url=f"{BASE_URL}/api/v1/chats_openai/{CHAT_ID}")
 rag = RAGFlow(api_key=API_KEY, base_url=BASE_URL)
 assistant = rag.list_chats(id=CHAT_ID)[0]
@@ -46,8 +47,292 @@ def get_mysql_connection():
         print(f"Error connecting to MySQL: {e}")
         return None
 
+
+def create_workout_stats_table():
+    """Create the workout_stats table if it doesn't exist"""
+    try:
+        connection = get_mysql_connection()
+        if not connection:
+            return False
+        
+        cursor = connection.cursor()
+        
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS workout_stats (
+            id VARCHAR(36) PRIMARY KEY,
+            user_id VARCHAR(100) NOT NULL,
+            session_id VARCHAR(100) NOT NULL,
+            exercise_name VARCHAR(200) NOT NULL,
+            exercise_type VARCHAR(50),
+            weight DECIMAL(10, 2),
+            weight_unit VARCHAR(10),
+            reps INT,
+            sets INT,
+            duration INT,
+            duration_unit VARCHAR(20),
+            distance DECIMAL(10, 2),
+            distance_unit VARCHAR(10),
+            calories INT,
+            notes TEXT,
+            workout_date DATE NOT NULL,
+            create_time BIGINT,
+            create_date DATETIME,
+            INDEX idx_user_date (user_id, workout_date),
+            INDEX idx_session (session_id),
+            INDEX idx_exercise (exercise_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """
+        
+        cursor.execute(create_table_query)
+        connection.commit()
+        cursor.close()
+        connection.close()
+        print("✅ Workout stats table created/verified")
+        return True
+        
+    except Exception as e:
+        print(f"Error creating workout_stats table: {e}")
+        return False
+
+
+def extract_workout_data(message_text):
+    """
+    Extract workout statistics from user messages using regex patterns.
+    Returns a list of workout entries.
+    """
+    workouts = []
+    
+    # Common exercise patterns
+    exercise_patterns = [
+        # "I benched 80kg for 5 reps, 3 sets"
+        r'(?:I\s+)?(\w+(?:\s+\w+)?)\s+(\d+(?:\.\d+)?)\s*(kg|lbs?|pounds?)\s+(?:for\s+)?(\d+)\s+reps?(?:\s+(?:for\s+)?(\d+)\s+sets?)?',
+        # "bench press: 80kg x 5 reps x 3 sets"
+        r'(\w+(?:\s+\w+)?)\s*:\s*(\d+(?:\.\d+)?)\s*(kg|lbs?|pounds?)\s*x\s*(\d+)\s+reps?\s*(?:x\s*(\d+)\s+sets?)?',
+        # "squatted 100kg 5x3" (weight x reps x sets)
+        r'(\w+(?:ed|ing)?)\s+(\d+(?:\.\d+)?)\s*(kg|lbs?|pounds?)\s+(\d+)x(\d+)',
+        # "ran 5km in 30 minutes"
+        r'(ran|run|running|jog|jogged)\s+(\d+(?:\.\d+)?)\s*(km|miles?|mi)\s+(?:in\s+)?(\d+)\s+(minutes?|mins?|hours?|hrs?)',
+        # "5km run" or "30 minute run"
+        r'(\d+(?:\.\d+)?)\s*(km|miles?|mi|minutes?|mins?)\s+(run|running|jog|jogging|cycling?|swimming?|rowing?)',
+        # "deadlift 120kg"
+        r'(\w+(?:\s+\w+)?)\s+(\d+(?:\.\d+)?)\s*(kg|lbs?|pounds?)',
+    ]
+    
+    for pattern in exercise_patterns:
+        matches = re.finditer(pattern, message_text, re.IGNORECASE)
+        for match in matches:
+            groups = match.groups()
+            workout = extract_workout_from_match(groups, pattern)
+            if workout:
+                workouts.append(workout)
+    
+    return workouts
+
+
+def extract_workout_from_match(groups, pattern):
+    """Convert regex match groups to structured workout data"""
+    try:
+        workout = {
+            'exercise_name': None,
+            'exercise_type': None,
+            'weight': None,
+            'weight_unit': None,
+            'reps': None,
+            'sets': None,
+            'duration': None,
+            'duration_unit': None,
+            'distance': None,
+            'distance_unit': None,
+            'calories': None,
+            'notes': None
+        }
+        
+        # Pattern 1 & 2: Standard weight/reps/sets
+        if len(groups) >= 4 and any(unit in str(groups[2]).lower() for unit in ['kg', 'lb', 'pound']):
+            workout['exercise_name'] = groups[0].strip().lower()
+            workout['weight'] = float(groups[1])
+            workout['weight_unit'] = 'kg' if 'kg' in groups[2].lower() else 'lbs'
+            workout['reps'] = int(groups[3])
+            workout['sets'] = int(groups[4]) if len(groups) > 4 and groups[4] else 1
+            workout['exercise_type'] = classify_exercise(workout['exercise_name'])
+            
+        # Pattern 4: Cardio with distance and time
+        elif len(groups) >= 5 and any(activity in str(groups[0]).lower() for activity in ['run', 'jog', 'cycle', 'swim']):
+            workout['exercise_name'] = groups[0].strip().lower()
+            workout['distance'] = float(groups[1])
+            workout['distance_unit'] = 'km' if 'km' in groups[2].lower() else 'miles'
+            workout['duration'] = int(groups[3])
+            workout['duration_unit'] = 'minutes' if 'min' in groups[4].lower() else 'hours'
+            workout['exercise_type'] = 'cardio'
+            
+        # Pattern 5: Distance/time based cardio
+        elif len(groups) >= 3 and any(activity in str(groups[2]).lower() for activity in ['run', 'jog', 'cycle', 'swim', 'row']):
+            workout['exercise_name'] = groups[2].strip().lower()
+            
+            if any(unit in str(groups[1]).lower() for unit in ['km', 'mile', 'mi']):
+                workout['distance'] = float(groups[0])
+                workout['distance_unit'] = 'km' if 'km' in groups[1].lower() else 'miles'
+            else:
+                workout['duration'] = int(groups[0])
+                workout['duration_unit'] = 'minutes' if 'min' in groups[1].lower() else 'hours'
+            
+            workout['exercise_type'] = 'cardio'
+            
+        # Pattern 6: Simple weight mention
+        elif len(groups) >= 3 and any(unit in str(groups[2]).lower() for unit in ['kg', 'lb', 'pound']):
+            workout['exercise_name'] = groups[0].strip().lower()
+            workout['weight'] = float(groups[1])
+            workout['weight_unit'] = 'kg' if 'kg' in groups[2].lower() else 'lbs'
+            workout['exercise_type'] = classify_exercise(workout['exercise_name'])
+        
+        # Only return if we have at least an exercise name
+        if workout['exercise_name']:
+            return workout
+            
+    except (ValueError, IndexError) as e:
+        print(f"Error parsing workout data: {e}")
+    
+    return None
+
+
+def classify_exercise(exercise_name):
+    """Classify exercise type based on name"""
+    strength_exercises = ['bench', 'squat', 'deadlift', 'press', 'curl', 'row', 'pull', 'push', 'lift']
+    cardio_exercises = ['run', 'jog', 'cycle', 'swim', 'rowing', 'bike', 'treadmill', 'elliptical']
+    
+    name_lower = exercise_name.lower()
+    
+    for exercise in strength_exercises:
+        if exercise in name_lower:
+            return 'strength'
+    
+    for exercise in cardio_exercises:
+        if exercise in name_lower:
+            return 'cardio'
+    
+    return 'other'
+
+
+def save_workout_stats(session_id, user_id, workouts, workout_date=None):
+    """Save workout statistics to MySQL and JSON file"""
+    if not workouts:
+        return
+    
+    if workout_date is None:
+        workout_date = datetime.now().date()
+    elif isinstance(workout_date, str):
+        workout_date = datetime.strptime(workout_date, '%Y-%m-%d').date()
+    
+    try:
+        connection = get_mysql_connection()
+        if not connection:
+            print("❌ No MySQL connection for workout stats")
+            return
+        
+        cursor = connection.cursor()
+        now_ms = int(time.time() * 1000)
+        now_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        for workout in workouts:
+            workout_id = uuid.uuid4().hex
+            
+            insert_query = """
+            INSERT INTO workout_stats 
+            (id, user_id, session_id, exercise_name, exercise_type, 
+             weight, weight_unit, reps, sets, duration, duration_unit,
+             distance, distance_unit, calories, notes, workout_date, 
+             create_time, create_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            values = (
+                workout_id,
+                user_id,
+                session_id,
+                workout['exercise_name'],
+                workout['exercise_type'],
+                workout['weight'],
+                workout['weight_unit'],
+                workout['reps'],
+                workout['sets'],
+                workout['duration'],
+                workout['duration_unit'],
+                workout['distance'],
+                workout['distance_unit'],
+                workout['calories'],
+                workout['notes'],
+                workout_date,
+                now_ms,
+                now_dt
+            )
+            
+            cursor.execute(insert_query, values)
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        print(f"💪 Saved {len(workouts)} workout stats to MySQL")
+        
+        # Also save to JSON file for easy frontend access
+        export_workout_stats_to_json(user_id)
+        
+    except Exception as e:
+        print(f"Error saving workout stats: {e}")
+
+
+def export_workout_stats_to_json(user_id="default_user"):
+    """Export all workout stats for a user to a JSON file"""
+    try:
+        connection = get_mysql_connection()
+        if not connection:
+            return None
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        query = """
+        SELECT * FROM workout_stats 
+        WHERE user_id = %s 
+        ORDER BY workout_date DESC, create_time DESC
+        """
+        
+        cursor.execute(query, (user_id,))
+        workouts = cursor.fetchall()
+        
+        # Convert decimal and date objects to JSON-serializable formats
+        for workout in workouts:
+            if workout.get('weight'):
+                workout['weight'] = float(workout['weight'])
+            if workout.get('distance'):
+                workout['distance'] = float(workout['distance'])
+            if workout.get('workout_date'):
+                workout['workout_date'] = workout['workout_date'].strftime('%Y-%m-%d')
+            if workout.get('create_date'):
+                workout['create_date'] = workout['create_date'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.close()
+        connection.close()
+        
+        # Save to JSON file
+        json_file_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+        with open(json_file_path, 'w') as f:
+            json.dump({
+                'user_id': user_id,
+                'total_workouts': len(workouts),
+                'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'workouts': workouts
+            }, f, indent=2)
+        
+        print(f"📊 Exported {len(workouts)} workouts to {json_file_path}")
+        return json_file_path
+        
+    except Exception as e:
+        print(f"Error exporting workout stats: {e}")
+        return None
+
+
 def save_to_mysql(session_id: str, question: str, answer: str):
-    """Save Q&A into MySQL conversation table"""
+    """Save Q&A into MySQL conversation table and extract workout stats"""
     try:
         connection = get_mysql_connection()
         if not connection:
@@ -92,14 +377,14 @@ def save_to_mysql(session_id: str, question: str, answer: str):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
-                    uuid.uuid4().hex,   # id
-                    now_ms, now_dt,     # create_time, create_date
-                    now_ms, now_dt,     # update_time, update_date
-                    session_id,         # dialog_id
-                    question[:255],     # name (truncate to 255)
-                    json.dumps(messages), # message
-                    "[]",               # reference (empty list for now)
-                    "default_user"      # user_id (replace with real user later)
+                    uuid.uuid4().hex,
+                    now_ms, now_dt,
+                    now_ms, now_dt,
+                    session_id,
+                    question[:255],
+                    json.dumps(messages),
+                    "[]",
+                    "default_user"
                 )
             )
 
@@ -107,9 +392,16 @@ def save_to_mysql(session_id: str, question: str, answer: str):
         cursor.close()
         connection.close()
         print(f"💾 Saved conversation to MySQL for session {session_id}")
+        
+        # Extract and save workout data from the user's question
+        workouts = extract_workout_data(question)
+        if workouts:
+            print(f"🏋️ Found {len(workouts)} workout(s) in message")
+            save_workout_stats(session_id, "default_user", workouts)
 
     except Exception as e:
         print(f"MySQL save error: {e}")
+
 
 def get_or_create_default_session():
     """Get the most recent session or create a new one"""
@@ -172,7 +464,7 @@ def generate_response(question: str, session_id: str,
                 yield f"data: {json.dumps({'content': content})}\n\n"
 
         if full_response:
-            # Save to MySQL
+            # Save to MySQL (which also extracts workout stats)
             thread = threading.Thread(
                 target=save_to_mysql,
                 args=(session_id, question, full_response)
@@ -193,8 +485,12 @@ def generate_response(question: str, session_id: str,
         print(f"Error in generate_response: {e}")
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
+
 @app.route("/")
 def index():
+    # Create workout stats table on startup
+    create_workout_stats_table()
+    
     # Ensure there's always an active session
     if "active_session_id" not in session:
         default_session = get_or_create_default_session()
@@ -224,6 +520,247 @@ def ask():
     return Response(generate_response(question, session_id), mimetype="text/event-stream")
 
 
+# NEW ENDPOINTS FOR WORKOUT STATS
+
+@app.route("/workout-stats", methods=["GET"])
+def get_workout_stats():
+    """Get workout statistics for a user"""
+    user_id = request.args.get("user_id", "default_user")
+    days = request.args.get("days", 30, type=int)
+    exercise_type = request.args.get("type")  # strength, cardio, other
+    
+    try:
+        connection = get_mysql_connection()
+        if not connection:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        # Build query based on filters
+        query = """
+        SELECT * FROM workout_stats 
+        WHERE user_id = %s 
+        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+        """
+        params = [user_id, days]
+        
+        if exercise_type:
+            query += " AND exercise_type = %s"
+            params.append(exercise_type)
+        
+        query += " ORDER BY workout_date DESC, create_time DESC"
+        
+        cursor.execute(query, params)
+        workouts = cursor.fetchall()
+        
+        # Convert to JSON-serializable format
+        for workout in workouts:
+            if workout.get('weight'):
+                workout['weight'] = float(workout['weight'])
+            if workout.get('distance'):
+                workout['distance'] = float(workout['distance'])
+            if workout.get('workout_date'):
+                workout['workout_date'] = workout['workout_date'].strftime('%Y-%m-%d')
+            if workout.get('create_date'):
+                workout['create_date'] = workout['create_date'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.close()
+        connection.close()
+        
+        return jsonify({
+            "total": len(workouts),
+            "workouts": workouts
+        })
+        
+    except Exception as e:
+        print(f"Error getting workout stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/workout-stats/summary", methods=["GET"])
+def get_workout_summary():
+    """Get summary statistics for workouts"""
+    user_id = request.args.get("user_id", "default_user")
+    days = request.args.get("days", 30, type=int)
+    
+    try:
+        connection = get_mysql_connection()
+        if not connection:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        # Get summary by exercise type
+        query = """
+        SELECT 
+            exercise_type,
+            COUNT(*) as workout_count,
+            COUNT(DISTINCT workout_date) as days_worked_out,
+            SUM(CASE WHEN sets IS NOT NULL THEN sets ELSE 1 END) as total_sets,
+            SUM(reps) as total_reps,
+            AVG(weight) as avg_weight,
+            MAX(weight) as max_weight,
+            SUM(duration) as total_duration,
+            SUM(distance) as total_distance
+        FROM workout_stats
+        WHERE user_id = %s 
+        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+        GROUP BY exercise_type
+        """
+        
+        cursor.execute(query, (user_id, days))
+        summary_by_type = cursor.fetchall()
+        
+        # Convert decimals to float
+        for row in summary_by_type:
+            if row.get('avg_weight'):
+                row['avg_weight'] = float(row['avg_weight'])
+            if row.get('max_weight'):
+                row['max_weight'] = float(row['max_weight'])
+            if row.get('total_distance'):
+                row['total_distance'] = float(row['total_distance'])
+        
+        # Get personal records
+        pr_query = """
+        SELECT exercise_name, MAX(weight) as max_weight, weight_unit
+        FROM workout_stats
+        WHERE user_id = %s AND weight IS NOT NULL
+        GROUP BY exercise_name, weight_unit
+        ORDER BY max_weight DESC
+        LIMIT 10
+        """
+        
+        cursor.execute(pr_query, (user_id,))
+        personal_records = cursor.fetchall()
+        
+        for pr in personal_records:
+            if pr.get('max_weight'):
+                pr['max_weight'] = float(pr['max_weight'])
+        
+        cursor.close()
+        connection.close()
+        
+        return jsonify({
+            "summary_by_type": summary_by_type,
+            "personal_records": personal_records,
+            "period_days": days
+        })
+        
+    except Exception as e:
+        print(f"Error getting workout summary: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/workout-stats/exercise/<exercise_name>", methods=["GET"])
+def get_exercise_history(exercise_name):
+    """Get history for a specific exercise"""
+    user_id = request.args.get("user_id", "default_user")
+    
+    try:
+        connection = get_mysql_connection()
+        if not connection:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        query = """
+        SELECT * FROM workout_stats
+        WHERE user_id = %s AND exercise_name = %s
+        ORDER BY workout_date DESC, create_time DESC
+        """
+        
+        cursor.execute(query, (user_id, exercise_name))
+        history = cursor.fetchall()
+        
+        # Convert to JSON-serializable format
+        for workout in history:
+            if workout.get('weight'):
+                workout['weight'] = float(workout['weight'])
+            if workout.get('distance'):
+                workout['distance'] = float(workout['distance'])
+            if workout.get('workout_date'):
+                workout['workout_date'] = workout['workout_date'].strftime('%Y-%m-%d')
+            if workout.get('create_date'):
+                workout['create_date'] = workout['create_date'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.close()
+        connection.close()
+        
+        return jsonify({
+            "exercise": exercise_name,
+            "total_sessions": len(history),
+            "history": history
+        })
+        
+    except Exception as e:
+        print(f"Error getting exercise history: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/workout-stats/export", methods=["GET"])
+def export_stats():
+    """Export workout stats to JSON file"""
+    user_id = request.args.get("user_id", "default_user")
+    
+    try:
+        json_file_path = export_workout_stats_to_json(user_id)
+        
+        if json_file_path and os.path.exists(json_file_path):
+            with open(json_file_path, 'r') as f:
+                data = json.load(f)
+            return jsonify(data)
+        else:
+            return jsonify({"error": "Failed to export stats"}), 500
+            
+    except Exception as e:
+        print(f"Error exporting stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/workout-stats", methods=["POST"])
+def manual_add_workout():
+    """Manually add a workout (for testing or manual entry)"""
+    try:
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
+        
+        user_id = data.get("user_id", "default_user")
+        session_id = session.get("active_session_id", "manual_entry")
+        
+        workout = {
+            'exercise_name': data.get('exercise_name'),
+            'exercise_type': data.get('exercise_type', 'other'),
+            'weight': float(data['weight']) if data.get('weight') else None,
+            'weight_unit': data.get('weight_unit'),
+            'reps': int(data['reps']) if data.get('reps') else None,
+            'sets': int(data['sets']) if data.get('sets') else None,
+            'duration': int(data['duration']) if data.get('duration') else None,
+            'duration_unit': data.get('duration_unit'),
+            'distance': float(data['distance']) if data.get('distance') else None,
+            'distance_unit': data.get('distance_unit'),
+            'calories': int(data['calories']) if data.get('calories') else None,
+            'notes': data.get('notes')
+        }
+        
+        workout_date = data.get('workout_date')
+        if not workout_date:
+            workout_date = datetime.now().date()
+        
+        save_workout_stats(session_id, user_id, [workout], workout_date)
+        
+        return jsonify({
+            "success": True,
+            "message": "Workout added successfully"
+        })
+        
+    except Exception as e:
+        print(f"Error manually adding workout: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Keep all your existing routes below...
 @app.route("/sessions", methods=["GET"])
 def list_sessions():
     """List all chat sessions"""
@@ -257,7 +794,6 @@ def create_session():
 
         session_name = data.get("name", f"Workout Session {datetime.now().strftime('%Y-%m-%d')}")
 
-        # Ensure the name is not empty
         if not session_name.strip():
             session_name = f"Workout Session {datetime.now().strftime('%Y-%m-%d')}"
 
@@ -266,13 +802,14 @@ def create_session():
 
         return jsonify({
             "id": new_session.id,
-            "name": new_session.name,  # This should be the name we set
+            "name": new_session.name,
             "message_count": 0,
             "created_at": getattr(new_session, 'created_at', None)
         })
     except Exception as e:
         print(f"Error creating session: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/sessions/<session_id>/activate", methods=["POST"])
 def activate_session(session_id):
@@ -433,7 +970,6 @@ def delete_session(session_id):
     try:
         assistant.delete_session(session_id=session_id)
         if session.get("active_session_id") == session_id:
-            # Set to another session or create new one
             new_session_id = get_or_create_default_session()
             session["active_session_id"] = new_session_id
         print(f"Deleted session {session_id}")
@@ -448,7 +984,6 @@ def get_current_session():
     """Get current active session with messages"""
     active_session_id = session.get("active_session_id")
 
-    # Auto-create session if none exists
     if not active_session_id:
         active_session_id = get_or_create_default_session()
         if active_session_id:
@@ -506,7 +1041,6 @@ def get_current_session():
             except Exception as db_error:
                 print(f"MySQL error in get_current_session: {db_error}")
 
-        # Fallback to SDK if no messages found
         if not messages:
             try:
                 sessions = assistant.list_sessions(id=active_session_id)
@@ -563,7 +1097,6 @@ def debug_table_structure():
         return jsonify({"error": str(e)}), 500
 
 
-# Add these helper functions for settings
 def get_coaching_style_prompt(style):
     """Get the coaching style modifier for the system prompt"""
     styles = {
@@ -585,34 +1118,34 @@ def get_detail_level_modifier(level):
     return levels.get(level, levels["moderate"])
 
 
-def apply_units_to_response(response, units):
-    """Convert units in the response based on user preference"""
-    if units == "imperial":
-        # This would need actual conversion logic, but for now we'll just note it
-        return response + "\n\n*Note: Displaying measurements in imperial units*"
-    return response
-
-
 def create_enhanced_system_prompt(profile_data, coaching_style="motivational", detail_level="moderate"):
     """Create a personalized system prompt with settings"""
     base_prompt = """You are a helpful fitness and health assistant. """
 
-    # Add coaching style
     coaching_prompt = get_coaching_style_prompt(coaching_style)
     base_prompt += coaching_prompt + " "
 
-    # Add detail level
     detail_prompt = get_detail_level_modifier(detail_level)
     base_prompt += detail_prompt + " "
 
-    base_prompt += "Always provide personalized recommendations based on the user's specific profile information below:\n\nUSER PROFILE:\n"
+    base_prompt += """
+IMPORTANT: When users mention their workouts, acknowledge them and extract the workout data. 
+Examples of workout mentions you should recognize:
+- "I benched 80kg for 5 reps, 3 sets"
+- "Did 100kg squats today, 5x5"
+- "Ran 5km in 30 minutes"
+- "Deadlifted 120kg"
+
+Always provide personalized recommendations based on the user's specific profile information below:
+
+USER PROFILE:
+"""
 
     if not profile_data:
         return base_prompt + "No profile information available. Provide general fitness advice."
 
     profile_sections = []
 
-    # Add basic info
     if profile_data.get('age') or profile_data.get('gender'):
         basic_info = []
         if profile_data.get('age'):
@@ -622,7 +1155,6 @@ def create_enhanced_system_prompt(profile_data, coaching_style="motivational", d
         if basic_info:
             profile_sections.append(" • " + ", ".join(basic_info))
 
-    # Add physical stats
     if profile_data.get('height') or profile_data.get('weight'):
         stats = []
         if profile_data.get('height'):
@@ -632,7 +1164,6 @@ def create_enhanced_system_prompt(profile_data, coaching_style="motivational", d
         if stats:
             profile_sections.append(" • " + ", ".join(stats))
 
-    # Add fitness goal
     if profile_data.get('goal'):
         goal_map = {
             'lose-weight': 'Weight loss',
@@ -645,7 +1176,6 @@ def create_enhanced_system_prompt(profile_data, coaching_style="motivational", d
         goal_text = goal_map.get(profile_data['goal'], profile_data['goal'])
         profile_sections.append(f" • Fitness Goal: {goal_text}")
 
-    # Add activity level
     if profile_data.get('activity'):
         activity_map = {
             'sedentary': 'Sedentary (little or no exercise)',
@@ -657,7 +1187,6 @@ def create_enhanced_system_prompt(profile_data, coaching_style="motivational", d
         activity_text = activity_map.get(profile_data['activity'], profile_data['activity'])
         profile_sections.append(f" • Activity Level: {activity_text}")
 
-    # Add dietary preferences
     if profile_data.get('diet') and profile_data['diet'] != 'none':
         diet_map = {
             'vegetarian': 'Vegetarian',
@@ -669,7 +1198,6 @@ def create_enhanced_system_prompt(profile_data, coaching_style="motivational", d
         diet_text = diet_map.get(profile_data['diet'], profile_data['diet'])
         profile_sections.append(f" • Dietary Preference: {diet_text}")
 
-    # Add medical considerations
     if profile_data.get('medical') and profile_data['medical'].strip():
         profile_sections.append(f" • Medical Considerations: {profile_data['medical']}")
 
@@ -693,7 +1221,6 @@ Use {knowledge} from the knowledge base to enhance your responses when relevant.
     return full_prompt
 
 
-# Update the update_assistant_with_profile function to include settings
 def update_assistant_with_profile(profile_data, settings=None):
     """Update the RAGFlow assistant with personalized system prompt and settings"""
     try:
@@ -709,14 +1236,12 @@ def update_assistant_with_profile(profile_data, settings=None):
             detail_level
         )
 
-        # Update the assistant with the new prompt
         update_data = {
             "prompt": {
                 "prompt": personalized_prompt
             }
         }
 
-        # Update the assistant
         assistant.update(update_data)
         print(f"✅ Updated RAGFlow assistant with personalized prompt and settings")
         print(f"📝 Coaching Style: {coaching_style}")
@@ -726,8 +1251,6 @@ def update_assistant_with_profile(profile_data, settings=None):
     except Exception as e:
         print(f"❌ Error updating RAGFlow assistant: {e}")
         return False
-
-
 
 
 @app.route("/settings", methods=["GET"])
@@ -741,7 +1264,6 @@ def get_settings():
         return jsonify({"error": str(e)}), 500
 
 
-# Update the save_settings function to handle profile data properly
 @app.route("/settings", methods=["POST"])
 def save_settings():
     """Save user settings and update RAGFlow assistant"""
@@ -751,7 +1273,6 @@ def save_settings():
         else:
             data = request.form.to_dict()
 
-        # Extract settings and profile data
         settings_data = {
             'coaching_style': data.get('coaching_style', 'motivational'),
             'detail_level': data.get('detail_level', 'moderate'),
@@ -762,17 +1283,14 @@ def save_settings():
             'show_calories': data.get('show_calories', True)
         }
 
-        # Save settings to session
         session['user_settings'] = settings_data
 
-        # Get profile data from the request or session
         profile_data = {}
         if 'profile_data' in data:
             profile_data = data['profile_data']
         elif 'user_profile' in session:
             profile_data = session['user_profile']
 
-        # Update the RAGFlow assistant with both profile and settings
         success = update_assistant_with_profile(profile_data, settings_data)
 
         if success:
@@ -788,7 +1306,6 @@ def save_settings():
         return jsonify({"error": str(e)}), 500
 
 
-# Update the profile route to store profile in session
 @app.route("/profile", methods=["POST"])
 def save_profile():
     """Save user profile and update RAGFlow assistant system prompt with settings"""
@@ -798,13 +1315,10 @@ def save_profile():
         else:
             profile_data = request.form.to_dict()
 
-        # Store profile in session
         session['user_profile'] = profile_data
 
-        # Get current settings
         settings = session.get('user_settings', {})
 
-        # Update the RAGFlow assistant with both profile and settings
         success = update_assistant_with_profile(profile_data, settings)
 
         if success:
@@ -820,7 +1334,6 @@ def save_profile():
         return jsonify({"error": str(e)}), 500
 
 
-# Add a route to get both profile and settings
 @app.route("/user-data", methods=["GET"])
 def get_user_data():
     """Get both user profile and settings"""
@@ -836,13 +1349,11 @@ def get_user_data():
         print(f"Error getting user data: {e}")
         return jsonify({"error": str(e)}), 500
 
-# Optional: Debug endpoint to see current system prompt
+
 @app.route("/debug/system-prompt", methods=["GET"])
 def debug_system_prompt():
     """Debug endpoint to see the current system prompt"""
     try:
-        # This would require storing the current profile somewhere,
-        # but for simplicity we can just return a message
         return jsonify({
             "message": "System prompt updated via RAGFlow assistant.update()",
             "note": "Check RAGFlow admin interface to see current system prompt"
@@ -850,5 +1361,8 @@ def debug_system_prompt():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
+    # Create workout stats table on startup
+    create_workout_stats_table()
     app.run(debug=True, threaded=True)
