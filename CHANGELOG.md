@@ -3,9 +3,13 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-- To implement as EChart for statistics
-- To collect data in the database for the statistics
-- Under the statistics chart, the AI will create a small resume of the progress made.
+- To optimise the database data storing
+- To add right side eChart buttons for exercise categorization
+
+## [1.0.2] - 2025-10-31
+- Connected the database storing the data into an JSON (it collects the data into, number of sets, name of the exercose, )
+- Implemented an eChart
+- Connected the eChart to show the personalized track progress based on your prompt (your number of sets and so on)
 
 ## [1.0.1] - 2025-10-17
 - Separated the JS code in the special script.js file
