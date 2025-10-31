@@ -15,10 +15,11 @@ import re
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
+
 # Configure RAGFlow + Ollama
 MODEL = os.getenv("MODEL")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = os.getenv("API_KEY")
+API_KEY = "ragflow-hhYWNhZjg4YWIzZTExZjA4NGI5YzJjND"
 BASE_URL = "http://localhost:9380"
 
 MYSQL_CONFIG = {
