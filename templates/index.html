@@ -1,315 +1,443 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FitCoach AI - Your Personal Health & Fitness Assistant</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
-  <link rel="stylesheet" href="../static/style/style.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-</head>
-<body>
-  <div class="app-container">
-    <!-- Sidebar -->
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo">
-          <span class="logo-icon">💪</span>
-          <div class="logo-text">
-            <h3>FitCoach AI</h3>
-            <p>Your Health & Fitness Partner</p>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FitCoach AI - Your Personal Health & Fitness Assistant</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.2/dist/echarts.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css"
+    />
+    <link rel="stylesheet" href="../static/style/style.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="sidebar-header">
+          <div class="logo">
+            <span class="logo-icon">💪</span>
+            <div class="logo-text">
+              <h3>FitCoach AI</h3>
+              <p>Your Health & Fitness Partner</p>
+            </div>
           </div>
-        </div>
 
-        <div class="quick-stats">
-          <h4>📊 Quick Stats</h4>
-          <div class="stat-item">
-            <span>Sessions Today</span>
-            <span class="stat-value" id="sessions-today">0</span>
+          <div class="quick-stats">
+            <h4>📊 Quick Stats</h4>
+            <div class="stat-item">
+              <span>Sessions Today</span>
+              <span class="stat-value" id="sessions-today">0</span>
+            </div>
+            <div class="stat-item">
+              <span>Total Workouts</span>
+              <span class="stat-value" id="total-workouts">0</span>
+            </div>
+            <div class="stat-item">
+              <span>Streak</span>
+              <span class="stat-value" id="streak-days">0 days</span>
+            </div>
           </div>
-          <div class="stat-item">
-            <span>Total Workouts</span>
-            <span class="stat-value" id="total-workouts">0</span>
-          </div>
-          <div class="stat-item">
-            <span>Streak</span>
-            <span class="stat-value" id="streak-days">0 days</span>
-          </div>
-        </div>
 
-        <input type="text" class="sidebar-search" id="search-conversations" placeholder="Search coaching sessions...">
-        <button class="new-chat-btn" onclick="createNewConversation()">+ New Session</button>
+          <input
+            type="text"
+            class="sidebar-search"
+            id="search-conversations"
+            placeholder="Search coaching sessions..."
+          />
+          <button class="new-chat-btn" onclick="createNewConversation()">
+            + New Session
+          </button>
+        </div>
+        <ul id="conversation-list"></ul>
       </div>
-      <ul id="conversation-list"></ul>
+
+      <!-- Chat Container -->
+      <div class="chat-container">
+        <div
+          id="progress-chart"
+          style="width: 100%; height: 300px; margin: 20px 0; display: none"
+        ></div>
+
+        <div class="chat-header">
+          <div class="chat-header-left">
+            <h2 id="chat-title">💪 FitCoach AI</h2>
+            <div class="status-indicator">
+              <span class="status-dot"></span>
+              <span>Ready to Train</span>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button class="header-btn" onclick="toggleProfile()">
+              👤 Profile
+            </button>
+            <button class="header-btn" onclick="toggleSettings()">
+              ⚙️ Settings
+            </button>
+            <button class="header-btn" onclick="exportPlan()">
+              📥 Export Plan
+            </button>
+            <button class="header-btn" onclick="toggleTheme()">🌙</button>
+          </div>
+        </div>
+
+        <div class="quick-actions">
+          <div
+            class="action-card"
+            onclick="usePrompt('Create a workout plan for me')"
+          >
+            <span class="action-icon">🏋️</span>
+            <div class="action-text">
+              <h4>Workout Plan</h4>
+              <p>Personalized training</p>
+            </div>
+          </div>
+          <div
+            class="action-card"
+            onclick="usePrompt('Design a meal plan for muscle gain')"
+          >
+            <span class="action-icon">🥗</span>
+            <div class="action-text">
+              <h4>Meal Plan</h4>
+              <p>Nutrition guidance</p>
+            </div>
+          </div>
+          <div class="action-card" onclick="showProgressChart()">
+            <span class="action-icon">📈</span>
+            <div class="action-text">
+              <h4>Track Progress</h4>
+              <p>Monitor your goals</p>
+            </div>
+          </div>
+          <div class="action-card" onclick="usePrompt('Give me recovery tips')">
+            <span class="action-icon">🧘</span>
+            <div class="action-text">
+              <h4>Recovery</h4>
+              <p>Rest & recovery</p>
+            </div>
+          </div>
+          <div
+            class="action-card"
+            onclick="usePrompt('Analyze my form in this exercise')"
+          >
+            <span class="action-icon">🎯</span>
+            <div class="action-text">
+              <h4>Form Check</h4>
+              <p>Technique analysis</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="suggested-prompts">
+          <span
+            class="prompt-chip"
+            onclick="usePrompt('What exercises are best for losing belly fat?')"
+            >🔥 Lose belly fat</span
+          >
+          <span
+            class="prompt-chip"
+            onclick="usePrompt('Create a 30-day muscle building program')"
+            >💪 Build muscle</span
+          >
+          <span
+            class="prompt-chip"
+            onclick="usePrompt('How many calories should I eat per day?')"
+            >🍽️ Calorie needs</span
+          >
+          <span
+            class="prompt-chip"
+            onclick="usePrompt('What are good pre-workout meals?')"
+            >⚡ Pre-workout fuel</span
+          >
+          <span
+            class="prompt-chip"
+            onclick="usePrompt('Design a stretching routine for flexibility')"
+            >🤸 Flexibility routine</span
+          >
+          <span
+            class="prompt-chip"
+            onclick="usePrompt('How do I improve my running endurance?')"
+            >🏃 Improve endurance</span
+          >
+        </div>
+
+        <div id="chat-box">
+          <div class="empty-state">
+            <div class="empty-state-icon">💪</div>
+            <h3>Welcome to FitCoach AI!</h3>
+            <p>
+              Your personal health and sports coach powered by RAGflow. I'm here
+              to help you with workout plans, nutrition advice, form checks,
+              progress tracking, and achieving your fitness goals. Let's start
+              your journey to a healthier you!
+            </p>
+          </div>
+        </div>
+
+        <div class="chat-input-container">
+          <div class="uploaded-files" id="uploaded-files"></div>
+          <div class="input-wrapper">
+            <div class="input-actions">
+              <button
+                class="input-btn"
+                onclick="document.getElementById('file-input').click()"
+                title="Upload progress photos or documents"
+              >
+                📎
+              </button>
+              <button
+                class="input-btn"
+                id="voice-btn"
+                onclick="toggleVoiceInput()"
+                title="Voice input"
+              >
+                🎤
+              </button>
+              <button
+                class="input-btn"
+                onclick="insertEmoji('💪')"
+                title="Quick emoji"
+              >
+                💪
+              </button>
+              <input
+                type="file"
+                id="file-input"
+                style="display: none"
+                multiple
+                accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+              />
+            </div>
+            <textarea
+              id="user-input"
+              placeholder="Ask about workouts, nutrition, or fitness goals..."
+              onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); }"
+              rows="1"
+            ></textarea>
+            <button class="send-btn" onclick="sendMessage()">Send 🚀</button>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <!-- Chat Container -->
-    <div class="chat-container">
-      <div class="chat-header">
-        <div class="chat-header-left">
-          <h2 id="chat-title">💪 FitCoach AI</h2>
-          <div class="status-indicator">
-            <span class="status-dot"></span>
-            <span>Ready to Train</span>
-          </div>
+    <!-- Profile Modal -->
+    <div class="modal" id="profile-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>👤 Your Fitness Profile</h3>
+          <button class="close-modal" onclick="closeProfile()">×</button>
         </div>
-        <div class="header-actions">
-          <button class="header-btn" onclick="toggleProfile()">👤 Profile</button>
-          <button class="header-btn" onclick="toggleSettings()">⚙️ Settings</button>
-          <button class="header-btn" onclick="exportPlan()">📥 Export Plan</button>
-          <button class="header-btn" onclick="toggleTheme()">🌙</button>
-        </div>
-      </div>
 
-      <div class="quick-actions">
-        <div class="action-card" onclick="usePrompt('Create a workout plan for me')">
-          <span class="action-icon">🏋️</span>
-          <div class="action-text">
-            <h4>Workout Plan</h4>
-            <p>Personalized training</p>
+        <div class="profile-section">
+          <div class="setting-item">
+            <label>Age</label>
+            <input
+              type="number"
+              id="profile-age"
+              placeholder="25"
+              min="10"
+              max="100"
+            />
           </div>
-        </div>
-        <div class="action-card" onclick="usePrompt('Design a meal plan for muscle gain')">
-          <span class="action-icon">🥗</span>
-          <div class="action-text">
-            <h4>Meal Plan</h4>
-            <p>Nutrition guidance</p>
-          </div>
-        </div>
-        <div class="action-card" onclick="usePrompt('Track my progress and calories')">
-          <span class="action-icon">📈</span>
-          <div class="action-text">
-            <h4>Track Progress</h4>
-            <p>Monitor your goals</p>
-          </div>
-        </div>
-        <div class="action-card" onclick="usePrompt('Give me recovery tips')">
-          <span class="action-icon">🧘</span>
-          <div class="action-text">
-            <h4>Recovery</h4>
-            <p>Rest & recovery</p>
-          </div>
-        </div>
-        <div class="action-card" onclick="usePrompt('Analyze my form in this exercise')">
-          <span class="action-icon">🎯</span>
-          <div class="action-text">
-            <h4>Form Check</h4>
-            <p>Technique analysis</p>
-          </div>
-        </div>
-      </div>
 
-      <div class="suggested-prompts">
-        <span class="prompt-chip" onclick="usePrompt('What exercises are best for losing belly fat?')">🔥 Lose belly fat</span>
-        <span class="prompt-chip" onclick="usePrompt('Create a 30-day muscle building program')">💪 Build muscle</span>
-        <span class="prompt-chip" onclick="usePrompt('How many calories should I eat per day?')">🍽️ Calorie needs</span>
-        <span class="prompt-chip" onclick="usePrompt('What are good pre-workout meals?')">⚡ Pre-workout fuel</span>
-        <span class="prompt-chip" onclick="usePrompt('Design a stretching routine for flexibility')">🤸 Flexibility routine</span>
-        <span class="prompt-chip" onclick="usePrompt('How do I improve my running endurance?')">🏃 Improve endurance</span>
-      </div>
-
-      <div id="chat-box">
-        <div class="empty-state">
-          <div class="empty-state-icon">💪</div>
-          <h3>Welcome to FitCoach AI!</h3>
-          <p>Your personal health and sports coach powered by RAGflow. I'm here to help you with workout plans, nutrition advice, form checks, progress tracking, and achieving your fitness goals. Let's start your journey to a healthier you!</p>
-        </div>
-      </div>
-
-      <div class="chat-input-container">
-        <div class="uploaded-files" id="uploaded-files"></div>
-        <div class="input-wrapper">
-          <div class="input-actions">
-            <button class="input-btn" onclick="document.getElementById('file-input').click()" title="Upload progress photos or documents">📎</button>
-            <button class="input-btn" id="voice-btn" onclick="toggleVoiceInput()" title="Voice input">🎤</button>
-            <button class="input-btn" onclick="insertEmoji('💪')" title="Quick emoji">💪</button>
-            <input type="file" id="file-input" style="display: none" multiple accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg">
+          <div class="setting-item">
+            <label>Gender</label>
+            <select id="profile-gender">
+              <option value="">Select</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="other">Other</option>
+            </select>
           </div>
-          <textarea
-            id="user-input"
-            placeholder="Ask about workouts, nutrition, or fitness goals..."
-            onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); }"
-            rows="1"
-          ></textarea>
-          <button class="send-btn" onclick="sendMessage()">Send 🚀</button>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Profile Modal -->
-  <div class="modal" id="profile-modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>👤 Your Fitness Profile</h3>
-        <button class="close-modal" onclick="closeProfile()">×</button>
-      </div>
+        <div class="profile-section">
+          <div class="setting-item">
+            <label>Height (cm)</label>
+            <input type="number" id="profile-height" placeholder="175" />
+          </div>
 
-      <div class="profile-section">
-        <div class="setting-item">
-          <label>Age</label>
-          <input type="number" id="profile-age" placeholder="25" min="10" max="100">
+          <div class="setting-item">
+            <label>Weight (kg)</label>
+            <input type="number" id="profile-weight" placeholder="70" />
+          </div>
         </div>
 
         <div class="setting-item">
-          <label>Gender</label>
-          <select id="profile-gender">
-            <option value="">Select</option>
-            <option value="male">Male</option>
-            <option value="female">Female</option>
-            <option value="other">Other</option>
+          <label>Fitness Goal</label>
+          <select id="profile-goal">
+            <option value="">Select your goal</option>
+            <option value="lose-weight">Lose Weight</option>
+            <option value="build-muscle">Build Muscle</option>
+            <option value="improve-endurance">Improve Endurance</option>
+            <option value="increase-flexibility">Increase Flexibility</option>
+            <option value="general-fitness">General Fitness</option>
+            <option value="sports-performance">Sports Performance</option>
           </select>
         </div>
-      </div>
 
-      <div class="profile-section">
         <div class="setting-item">
-          <label>Height (cm)</label>
-          <input type="number" id="profile-height" placeholder="175">
+          <label>Activity Level</label>
+          <select id="profile-activity">
+            <option value="">Select activity level</option>
+            <option value="sedentary">Sedentary (little or no exercise)</option>
+            <option value="light">Light (1-3 days/week)</option>
+            <option value="moderate">Moderate (3-5 days/week)</option>
+            <option value="active">Active (6-7 days/week)</option>
+            <option value="very-active">Very Active (2x per day)</option>
+          </select>
         </div>
 
         <div class="setting-item">
-          <label>Weight (kg)</label>
-          <input type="number" id="profile-weight" placeholder="70">
+          <label>Dietary Preferences</label>
+          <select id="profile-diet">
+            <option value="">Select dietary preference</option>
+            <option value="none">No restrictions</option>
+            <option value="vegetarian">Vegetarian</option>
+            <option value="vegan">Vegan</option>
+            <option value="keto">Keto</option>
+            <option value="paleo">Paleo</option>
+            <option value="gluten-free">Gluten-Free</option>
+          </select>
         </div>
-      </div>
 
-      <div class="setting-item">
-        <label>Fitness Goal</label>
-        <select id="profile-goal">
-          <option value="">Select your goal</option>
-          <option value="lose-weight">Lose Weight</option>
-          <option value="build-muscle">Build Muscle</option>
-          <option value="improve-endurance">Improve Endurance</option>
-          <option value="increase-flexibility">Increase Flexibility</option>
-          <option value="general-fitness">General Fitness</option>
-          <option value="sports-performance">Sports Performance</option>
-        </select>
-      </div>
+        <div class="setting-item">
+          <label>Medical Conditions / Injuries</label>
+          <input
+            type="text"
+            id="profile-medical"
+            placeholder="e.g., knee injury, diabetes, none"
+          />
+        </div>
 
-      <div class="setting-item">
-        <label>Activity Level</label>
-        <select id="profile-activity">
-          <option value="">Select activity level</option>
-          <option value="sedentary">Sedentary (little or no exercise)</option>
-          <option value="light">Light (1-3 days/week)</option>
-          <option value="moderate">Moderate (3-5 days/week)</option>
-          <option value="active">Active (6-7 days/week)</option>
-          <option value="very-active">Very Active (2x per day)</option>
-        </select>
+        <button
+          class="new-chat-btn"
+          style="margin-top: 10px"
+          onclick="saveProfile()"
+        >
+          💾 Save Profile
+        </button>
       </div>
-
-      <div class="setting-item">
-        <label>Dietary Preferences</label>
-        <select id="profile-diet">
-          <option value="">Select dietary preference</option>
-          <option value="none">No restrictions</option>
-          <option value="vegetarian">Vegetarian</option>
-          <option value="vegan">Vegan</option>
-          <option value="keto">Keto</option>
-          <option value="paleo">Paleo</option>
-          <option value="gluten-free">Gluten-Free</option>
-        </select>
-      </div>
-
-      <div class="setting-item">
-        <label>Medical Conditions / Injuries</label>
-        <input type="text" id="profile-medical" placeholder="e.g., knee injury, diabetes, none">
-      </div>
-
-      <button class="new-chat-btn" style="margin-top: 10px;" onclick="saveProfile()">💾 Save Profile</button>
     </div>
-  </div>
 
-<!-- Settings Modal -->
-<div class="modal" id="settings-modal">
-    <div class="modal-content">
+    <!-- Settings Modal -->
+    <div class="modal" id="settings-modal">
+      <div class="modal-content">
         <div class="modal-header">
-            <h3>⚙️ Settings</h3>
-            <button class="close-modal" onclick="closeSettings()">×</button>
+          <h3>⚙️ Settings</h3>
+          <button class="close-modal" onclick="closeSettings()">×</button>
         </div>
 
         <div class="setting-item">
-            <label>AI Coaching Style</label>
-            <select id="coaching-style">
-                <option value="motivational">Motivational & Encouraging</option>
-                <option value="professional">Professional & Technical</option>
-                <option value="casual">Casual & Friendly</option>
-                <option value="strict">Strict & Disciplined</option>
-            </select>
+          <label>AI Coaching Style</label>
+          <select id="coaching-style">
+            <option value="motivational">Motivational & Encouraging</option>
+            <option value="professional">Professional & Technical</option>
+            <option value="casual">Casual & Friendly</option>
+            <option value="strict">Strict & Disciplined</option>
+          </select>
         </div>
 
         <div class="setting-item">
-            <label>Response Detail Level</label>
-            <select id="detail-level">
-                <option value="brief">Brief (Quick answers)</option>
-                <option value="moderate">Moderate (Balanced)</option>
-                <option value="detailed">Detailed (In-depth)</option>
-            </select>
+          <label>Response Detail Level</label>
+          <select id="detail-level">
+            <option value="brief">Brief (Quick answers)</option>
+            <option value="moderate">Moderate (Balanced)</option>
+            <option value="detailed">Detailed (In-depth)</option>
+          </select>
         </div>
 
         <div class="setting-item">
-            <label>Measurement Units</label>
-            <select id="units">
-                <option value="metric">Metric (kg, cm)</option>
-                <option value="imperial">Imperial (lbs, inches)</option>
-            </select>
+          <label>Measurement Units</label>
+          <select id="units">
+            <option value="metric">Metric (kg, cm)</option>
+            <option value="imperial">Imperial (lbs, inches)</option>
+          </select>
         </div>
 
         <div class="setting-item">
-            <label style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Dark Mode</span>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="dark-mode-toggle">
-                    <span class="toggle-slider"></span>
-                </label>
+          <label
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <span>Dark Mode</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="dark-mode-toggle" />
+              <span class="toggle-slider"></span>
             </label>
+          </label>
         </div>
 
         <div class="setting-item">
-            <label style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Voice Responses</span>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="auto-speak-toggle">
-                    <span class="toggle-slider"></span>
-                </label>
+          <label
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <span>Voice Responses</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="auto-speak-toggle" />
+              <span class="toggle-slider"></span>
             </label>
+          </label>
         </div>
 
         <div class="setting-item">
-            <label style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Daily Reminders</span>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="reminders-toggle">
-                    <span class="toggle-slider"></span>
-                </label>
+          <label
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <span>Daily Reminders</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="reminders-toggle" />
+              <span class="toggle-slider"></span>
             </label>
+          </label>
         </div>
 
         <div class="setting-item">
-            <label style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Show Calorie Estimates</span>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="calories-toggle" checked>
-                    <span class="toggle-slider"></span>
-                </label>
+          <label
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <span>Show Calorie Estimates</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="calories-toggle" checked />
+              <span class="toggle-slider"></span>
             </label>
+          </label>
         </div>
 
         <!-- Add Save Button -->
-        <button class="new-chat-btn" style="margin-top: 20px; width: 100%;" onclick="saveSettings()">
-            💾 Save Settings
+        <button
+          class="new-chat-btn"
+          style="margin-top: 20px; width: 100%"
+          onclick="saveSettings()"
+        >
+          💾 Save Settings
         </button>
+      </div>
     </div>
-</div>
 
-
-  <!-- Toast Notification -->
-  <div class="toast" id="toast">
-    <span class="toast-icon" id="toast-icon"></span>
-    <span id="toast-message"></span>
-  </div>
-  <script src="../static/script.js"></script>
-</body>
+    <!-- Toast Notification -->
+    <div class="toast" id="toast">
+      <span class="toast-icon" id="toast-icon"></span>
+      <span id="toast-message"></span>
+    </div>
+    <script src="../static/script.js"></script>
+  </body>
 </html>
