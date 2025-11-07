@@ -1,6 +1,7 @@
 from flask import Flask, render_template, Response, request, jsonify, session
 from openai import OpenAI
 from ragflow_sdk import RAGFlow
+from dotenv import load_dotenv
 import json
 import os
 import threading
@@ -15,12 +16,12 @@ import re
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-
+load_dotenv()
 # Configure RAGFlow + Ollama
 MODEL = os.getenv("MODEL")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = "ragflow-hhYWNhZjg4YWIzZTExZjA4NGI5YzJjND"
-BASE_URL = "http://localhost:9380"
+API_KEY = os.getenv("API_KEY")
+BASE_URL = os.getenv("BASE_URL")
 
 MYSQL_CONFIG = {
     'host': 'localhost',
