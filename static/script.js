@@ -1044,10 +1044,10 @@ var progressChart; // Store chart instance
 
 async function showProgressChart() {
   const chartDiv = document.getElementById("progress-chart");
-
+  const summaryElement = document.getElementById('progress-summary'); 
   // Show the chart container
   chartDiv.style.display = "block";
-
+  if (summaryElement) summaryElement.style.display = "block";
   // If echarts not loaded for some reason, load it dynamically and retry
   if (typeof echarts === "undefined") {
     // Provide user feedback and load library
@@ -1197,7 +1197,45 @@ async function showProgressChart() {
     console.error("Error setting chart option:", err);
     showToast("❌ Error rendering chart", "error");
   }
-
+  
+  await loadProgressSummary(30); 
   // Scroll chat-box to chart
   chartDiv.scrollIntoView({ behavior: "smooth" });
+}
+// ===== PROGRESS SUMMARY FUNCTIONS =====
+async function loadProgressSummary(days = 30) {
+    try {
+        const response = await fetch(`/workout-stats/progress-summary?days=${days}`);
+        const data = await response.json();
+        
+        if (data.error) throw new Error(data.error);
+        
+        // Update the summary content
+        document.getElementById('summaryText').textContent = data.summary;
+        document.getElementById('workoutCount').textContent = data.total_workouts;
+        document.getElementById('periodDays').textContent = days;
+        
+        // Show content
+        document.getElementById('summaryLoading').style.display = 'none';
+        document.getElementById('summaryContent').style.display = 'block';
+        
+        showToast('🤖 Progress analysis updated!', 'success');
+        
+    } catch (error) {
+        console.error('Error loading progress summary:', error);
+        document.getElementById('summaryLoading').style.display = 'none';
+        document.getElementById('summaryText').textContent = "I'm having trouble analyzing your progress. Make sure you've logged some workouts!";
+        document.getElementById('summaryContent').style.display = 'block';
+        showToast('❌ Error loading progress analysis', 'error');
+    }
+}
+
+function refreshProgressSummary() {
+    loadProgressSummary(30);
+}
+
+function checkForNewWorkouts(messageText) {
+    if (!messageText) return false;
+    const workoutKeywords = ['kg', 'lbs', 'reps', 'sets', 'bench', 'squat', 'deadlift', 'run', 'km', 'miles', 'minutes'];
+    return workoutKeywords.some(keyword => messageText.toLowerCase().includes(keyword));
 }

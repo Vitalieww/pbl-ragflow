@@ -1363,7 +1363,274 @@ def debug_system_prompt():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/workout-stats/progress-summary", methods=["GET"])
+def get_progress_summary():
+    """Generate AI-powered progress summary based on workout statistics"""
+    user_id = request.args.get("user_id", "default_user")
+    days = request.args.get("days", 30, type=int)
+    
+    try:
+        # Get workout data
+        connection = get_mysql_connection()
+        if not connection:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        # Get comprehensive workout data for the period
+        query = """
+        SELECT 
+            exercise_type,
+            exercise_name,
+            weight,
+            weight_unit,
+            reps,
+            sets,
+            duration,
+            distance,
+            workout_date,
+            create_time
+        FROM workout_stats 
+        WHERE user_id = %s 
+        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+        ORDER BY workout_date ASC
+        """
+        
+        cursor.execute(query, (user_id, days))
+        workouts = cursor.fetchall()
+        
+        # Get previous period data for comparison
+        previous_query = """
+        SELECT 
+            exercise_type,
+            COUNT(*) as workout_count,
+            AVG(weight) as avg_weight,
+            AVG(reps) as avg_reps,
+            SUM(distance) as total_distance,
+            SUM(duration) as total_duration
+        FROM workout_stats 
+        WHERE user_id = %s 
+        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+        AND workout_date < DATE_SUB(CURDATE(), INTERVAL %s DAY)
+        GROUP BY exercise_type
+        """
+        
+        cursor.execute(previous_query, (user_id, days*2, days))
+        previous_data = cursor.fetchall()
+        
+        cursor.close()
+        connection.close()
+        
+        if not workouts:
+            return jsonify({
+                "summary": "No workout data available for analysis. Start logging your workouts to see progress insights!",
+                "has_data": False
+            })
+        
+        # Prepare data for AI analysis
+        workout_context = prepare_workout_context(workouts, previous_data, days)
+        
+        # Generate AI summary
+        summary = generate_progress_summary(workout_context, user_id)
+        
+        return jsonify({
+            "summary": summary,
+            "has_data": True,
+            "period_days": days,
+            "total_workouts": len(workouts)
+        })
+        
+    except Exception as e:
+        print(f"Error generating progress summary: {e}")
+        return jsonify({"error": str(e)}), 500
 
+
+def prepare_workout_context(workouts, previous_data, days):
+    """Prepare structured context for AI analysis"""
+    
+    # Calculate current period statistics
+    current_stats = {
+        'strength': {'workouts': 0, 'total_volume': 0, 'max_weight': 0, 'exercises': {}},
+        'cardio': {'workouts': 0, 'total_distance': 0, 'total_duration': 0, 'exercises': {}},
+        'other': {'workouts': 0, 'exercises': {}}
+    }
+    
+    for workout in workouts:
+        exercise_type = workout['exercise_type'] or 'other'
+        
+        if exercise_type == 'strength':
+            current_stats['strength']['workouts'] += 1
+            if workout['weight'] and workout['reps'] and workout['sets']:
+                volume = workout['weight'] * workout['reps'] * (workout['sets'] or 1)
+                current_stats['strength']['total_volume'] += volume
+                
+                # Track max weight per exercise
+                exercise_name = workout['exercise_name']
+                if exercise_name not in current_stats['strength']['exercises']:
+                    current_stats['strength']['exercises'][exercise_name] = {
+                        'max_weight': workout['weight'],
+                        'total_volume': volume
+                    }
+                else:
+                    if workout['weight'] > current_stats['strength']['exercises'][exercise_name]['max_weight']:
+                        current_stats['strength']['exercises'][exercise_name]['max_weight'] = workout['weight']
+                    current_stats['strength']['exercises'][exercise_name]['total_volume'] += volume
+                
+                if workout['weight'] > current_stats['strength']['max_weight']:
+                    current_stats['strength']['max_weight'] = workout['weight']
+                    
+        elif exercise_type == 'cardio':
+            current_stats['cardio']['workouts'] += 1
+            if workout['distance']:
+                current_stats['cardio']['total_distance'] += workout['distance']
+            if workout['duration']:
+                current_stats['cardio']['total_duration'] += workout['duration']
+                
+            exercise_name = workout['exercise_name']
+            if exercise_name not in current_stats['cardio']['exercises']:
+                current_stats['cardio']['exercises'][exercise_name] = {
+                    'total_distance': workout['distance'] or 0,
+                    'total_duration': workout['duration'] or 0
+                }
+        
+        else:
+            current_stats['other']['workouts'] += 1
+            exercise_name = workout['exercise_name']
+            if exercise_name not in current_stats['other']['exercises']:
+                current_stats['other']['exercises'][exercise_name] = 1
+            else:
+                current_stats['other']['exercises'][exercise_name] += 1
+    
+    # Calculate trends compared to previous period
+    trends = calculate_trends(current_stats, previous_data)
+    
+    return {
+        'current_stats': current_stats,
+        'previous_data': previous_data,
+        'trends': trends,
+        'period_days': days,
+        'total_workouts': len(workouts)
+    }
+
+
+def calculate_trends(current_stats, previous_data):
+    """Calculate trends compared to previous period"""
+    trends = {
+        'strength_volume_trend': 'stable',
+        'cardio_trend': 'stable',
+        'consistency_trend': 'stable'
+    }
+    
+    # Convert previous data to comparable format
+    prev_strength_volume = 0
+    prev_cardio_distance = 0
+    prev_workout_count = 0
+    
+    for item in previous_data:
+        if item['exercise_type'] == 'strength' and item['avg_weight']:
+            # Estimate volume (simplified)
+            prev_strength_volume += (item['avg_weight'] or 0) * (item['avg_reps'] or 5) * (item['workout_count'] or 1)
+        elif item['exercise_type'] == 'cardio':
+            prev_cardio_distance += item['total_distance'] or 0
+        prev_workout_count += item['workout_count'] or 0
+    
+    # Calculate trends (simplified - in real implementation, use proper comparison)
+    current_strength_volume = current_stats['strength']['total_volume']
+    current_cardio_distance = current_stats['cardio']['total_distance']
+    current_workout_count = current_stats['strength']['workouts'] + current_stats['cardio']['workouts'] + current_stats['other']['workouts']
+    
+    if prev_strength_volume > 0:
+        strength_change = ((current_strength_volume - prev_strength_volume) / prev_strength_volume) * 100
+        trends['strength_volume_trend'] = 'improving' if strength_change > 10 else 'declining' if strength_change < -10 else 'stable'
+    
+    if prev_cardio_distance > 0:
+        cardio_change = ((current_cardio_distance - prev_cardio_distance) / prev_cardio_distance) * 100
+        trends['cardio_trend'] = 'improving' if cardio_change > 10 else 'declining' if cardio_change < -10 else 'stable'
+    
+    if prev_workout_count > 0:
+        consistency_change = ((current_workout_count - prev_workout_count) / prev_workout_count) * 100
+        trends['consistency_trend'] = 'improving' if consistency_change > 10 else 'declining' if consistency_change < -10 else 'stable'
+    
+    return trends
+
+
+def generate_progress_summary(workout_context, user_id):
+    """Generate AI-powered progress summary"""
+    
+    # Prepare prompt for AI
+    prompt = f"""
+    Analyze this workout data and provide a concise, motivational progress summary:
+    
+    Workout Period: Last {workout_context['period_days']} days
+    Total Workouts: {workout_context['total_workouts']}
+    
+    Strength Training:
+    - Workouts: {workout_context['current_stats']['strength']['workouts']}
+    - Total Volume: {workout_context['current_stats']['strength']['total_volume']:.0f}
+    - Max Weight: {workout_context['current_stats']['strength']['max_weight']}
+    - Key Exercises: {list(workout_context['current_stats']['strength']['exercises'].keys())[:5]}
+    
+    Cardio:
+    - Workouts: {workout_context['current_stats']['cardio']['workouts']}
+    - Total Distance: {workout_context['current_stats']['cardio']['total_distance']:.1f} km
+    - Total Duration: {workout_context['current_stats']['cardio']['total_duration']} minutes
+    
+    Trends:
+    - Strength Volume: {workout_context['trends']['strength_volume_trend']}
+    - Cardio: {workout_context['trends']['cardio_trend']}
+    - Consistency: {workout_context['trends']['consistency_trend']}
+    
+    Please provide:
+    1. A brief overview of their progress
+    2. Key achievements and improvements
+    3. Areas that might need attention
+    4. Motivational encouragement
+    5. One specific suggestion for continued progress
+    
+    Keep it under 200 words, positive and actionable.
+    """
+    
+    try:
+        # Use your existing AI client to generate the summary
+        completion = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a motivational fitness coach. Provide concise, encouraging progress summaries based on workout data. Highlight achievements and give one practical suggestion."},
+                {"role": "user", "content": prompt}
+            ],
+            stream=False,
+            max_tokens=500
+        )
+        
+        return completion.choices[0].message.content
+        
+    except Exception as e:
+        print(f"Error generating AI summary: {e}")
+        # Fallback summary
+        return generate_fallback_summary(workout_context)
+
+
+def generate_fallback_summary(workout_context):
+    """Generate a basic summary if AI fails"""
+    total_workouts = workout_context['total_workouts']
+    strength_workouts = workout_context['current_stats']['strength']['workouts']
+    cardio_workouts = workout_context['current_stats']['cardio']['workouts']
+    
+    summary = f"Great work! You've completed {total_workouts} workouts in the last {workout_context['period_days']} days. "
+    
+    if strength_workouts > 0:
+        summary += f"You've built strength with {strength_workouts} strength sessions. "
+        if workout_context['current_stats']['strength']['max_weight'] > 0:
+            summary += f"Your max weight lifted was {workout_context['current_stats']['strength']['max_weight']}kg. "
+    
+    if cardio_workouts > 0:
+        summary += f"You've improved endurance with {cardio_workouts} cardio workouts. "
+        if workout_context['current_stats']['cardio']['total_distance'] > 0:
+            summary += f"You covered {workout_context['current_stats']['cardio']['total_distance']:.1f}km total. "
+    
+    summary += "Keep up the consistent effort! Try increasing your weights or distance slightly in your next session."
+    
+    return summary
 if __name__ == "__main__":
     # Create workout stats table on startup
     create_workout_stats_table()
