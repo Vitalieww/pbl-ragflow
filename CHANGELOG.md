@@ -3,8 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-- To optimise the database data storing
 - To add right side eChart buttons for exercise categorization
+## [1.1.0.0] - 2025-11-29
+- Refactored workout extraction method to use a small separate AI with custom instructions for extracting workouts from user messages.
 ## [1.0.3.1] - 2025-11-07
 - Made environment variables be useable
 ## [1.0.3] - 2025-10-31
