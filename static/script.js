@@ -7,8 +7,10 @@ let userProfile = {};
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   loadSessions();
-  loadProfile();
+  loadUserData();
+  loadProfile();  // ← ADD THIS
   loadStats();
+  loadWorkoutDataFromJson(); // NEW: Load JSON on startup
   initializeVoiceRecognition();
 
   // Auto-resize textarea
@@ -26,6 +28,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // File upload
   document.getElementById("file-input").addEventListener("change", handleFiles);
 });
+
+// NEW: Load workout data from JSON file
+let cachedJsonWorkouts = [];
+
+async function loadWorkoutDataFromJson() {
+  try {
+    const res = await fetch("/workout-stats/load-json?user_id=default_user");
+    const data = await res.json();
+    if (data && data.workouts && Array.isArray(data.workouts)) {
+      cachedJsonWorkouts = data.workouts;
+      console.log(`✅ Loaded ${cachedJsonWorkouts.length} workouts from JSON`);
+    }
+  } catch (err) {
+    console.error("Error loading JSON workouts:", err);
+    cachedJsonWorkouts = [];
+  }
+}
 
 // Load user profile
 function loadProfile() {
@@ -128,6 +147,7 @@ async function loadSessions() {
 // Fix the createNewConversation function
 async function createNewConversation() {
   try {
+    hideProgressSummary(); // hide summary when creating session
     // Create a more descriptive default name
     const defaultName = `Workout Session ${new Date().toLocaleDateString()}`;
 
@@ -161,6 +181,7 @@ async function createNewConversation() {
 // Activate session
 async function activateSession(id) {
   try {
+    hideProgressSummary(); // hide summary when switching sessions
     // 1. Activate the session on the backend
     await fetch(`/sessions/${id}/activate`, { method: "POST" });
     activeSessionId = id;
@@ -345,8 +366,27 @@ async function renameSession(sessionId, newName) {
   }
 }
 
+// Hide the progress summary (and chart if desired)
+function hideProgressSummary() {
+  const progressSection = document.getElementById("progress-section");
+  const chart = document.getElementById("progress-chart");
+  const summary = document.getElementById("progress-summary");
+  
+  if (progressSection) progressSection.style.display = "none";
+  if (chart) chart.style.display = "none";
+  if (summary) summary.style.display = "none";
+  
+  try {
+    if (progressChart && typeof progressChart.dispose === "function") {
+      progressChart.dispose();
+      progressChart = null;
+    }
+  } catch (e) { /* ignore */ }
+}
+
 // Send message
 async function sendMessage() {
+  hideProgressSummary();
   const input = document.getElementById("user-input");
   const text = input.value.trim();
   if (!text || !activeSessionId) {
@@ -878,53 +918,6 @@ function updateUnitsDisplay() {
   }
 }
 
-// Update the initialization
-document.addEventListener("DOMContentLoaded", () => {
-  loadSessions();
-  loadUserData(); // Replace loadProfile() and loadSettings() with this
-  loadStats();
-  initializeVoiceRecognition();
-
-  // Auto-resize textarea
-  const textarea = document.getElementById("user-input");
-  textarea.addEventListener("input", function () {
-    this.style.height = "auto";
-    this.style.height = this.scrollHeight + "px";
-  });
-
-  // Search conversations
-  document
-    .getElementById("search-conversations")
-    .addEventListener("input", filterConversations);
-
-  // File upload
-  document.getElementById("file-input").addEventListener("change", handleFiles);
-});
-
-// Initialize settings when page loads
-document.addEventListener("DOMContentLoaded", () => {
-  loadSessions();
-  loadProfile();
-  loadSettings(); // Add this line
-  loadStats();
-  initializeVoiceRecognition();
-
-  // Auto-resize textarea
-  const textarea = document.getElementById("user-input");
-  textarea.addEventListener("input", function () {
-    this.style.height = "auto";
-    this.style.height = this.scrollHeight + "px";
-  });
-
-  // Search conversations
-  document
-    .getElementById("search-conversations")
-    .addEventListener("input", filterConversations);
-
-  // File upload
-  document.getElementById("file-input").addEventListener("change", handleFiles);
-});
-
 // File upload
 function handleFiles(e) {
   const files = Array.from(e.target.files);
@@ -1042,162 +1035,238 @@ window.onclick = function (event) {
 
 var progressChart; // Store chart instance
 
+// Replace showProgressChart with fixed version
 async function showProgressChart() {
+  const progressSection = document.getElementById("progress-section");
   const chartDiv = document.getElementById("progress-chart");
+  const summaryElement = document.getElementById("progress-summary");
+  
+  // Show progress section
+  if (progressSection) progressSection.style.display = "block";
+  if (chartDiv) chartDiv.style.display = "block";
+  if (summaryElement) summaryElement.style.display = "block";
 
-  // Show the chart container
-  chartDiv.style.display = "block";
-
-  // If echarts not loaded for some reason, load it dynamically and retry
+  // Load ECharts if not already loaded
   if (typeof echarts === "undefined") {
-    // Provide user feedback and load library
-    showToast("Loading chart library...", "success");
     const script = document.createElement("script");
-    script.src =
-      "https://cdn.jsdelivr.net/npm/echarts@5.4.2/dist/echarts.min.js";
-    script.onload = () => {
-      // retry after library loads
-      setTimeout(() => showProgressChart(), 50);
-    };
-    script.onerror = () =>
-      showToast("❌ Failed to load chart library", "error");
+    script.src = "https://cdn.jsdelivr.net/npm/echarts@5.4.2/dist/echarts.min.js";
+    script.onload = () => setTimeout(() => showProgressChart(), 100);
+    script.onerror = () => showToast("❌ Failed to load chart library", "error");
     document.head.appendChild(script);
     return;
   }
 
-  // Ensure echarts is available
-  if (typeof echarts === "undefined") {
-    showToast("❌ Chart library not available", "error");
+  // Fetch from backend first, fallback to cached JSON
+  let workouts = [];
+  try {
+    const res = await fetch(`/workout-stats?user_id=default_user&days=30`);
+    const data = await res.json();
+    if (data && Array.isArray(data.workouts) && data.workouts.length > 0) {
+      workouts = data.workouts;
+      console.log(`📊 Loaded ${workouts.length} workouts from database`);
+    }
+  } catch (err) {
+    console.error("Error fetching workout stats from DB:", err);
+  }
+
+  // Fallback to cached JSON if DB is empty
+  if (!workouts || workouts.length === 0) {
+    if (cachedJsonWorkouts.length > 0) {
+      console.log("📦 Using cached JSON workouts as fallback");
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 30);
+      workouts = cachedJsonWorkouts.filter(w => new Date(w.workout_date) >= cutoff);
+    }
+  }
+
+  // If still no data: hide chart and show only progress summary
+  if (!workouts || workouts.length === 0) {
+    try { 
+      if (progressChart && typeof progressChart.dispose === "function") {
+        progressChart.dispose();
+        progressChart = null;
+      } 
+    } catch(e){}
+    
+    if (chartDiv) chartDiv.style.display = "none";
+    await loadProgressSummary(30);
     return;
   }
 
-  // Initialize chart once
-  if (!progressChart) {
-    try {
-      progressChart = echarts.init(chartDiv);
-    } catch (err) {
-      console.error("Error initializing chart instance:", err);
-      showToast("❌ Error initializing chart", "error");
-      return;
+  // Ensure chart div is visible and properly sized
+  if (chartDiv) {
+    chartDiv.style.display = "block";
+    chartDiv.style.width = "100%";
+    chartDiv.style.height = "350px";
+    // Force reflow
+    void chartDiv.offsetHeight;
+  }
+  
+  try {
+    // Dispose old chart instance
+    if (progressChart) {
+      try {
+        progressChart.dispose();
+      } catch(e) {}
     }
-  } else {
-    try {
-      progressChart.clear();
-    } catch (e) {
-      /* ignore */
-    }
+    
+    // Initialize chart
+    progressChart = echarts.init(chartDiv, null, { renderer: 'canvas', useDirtyRect: true });
+  } catch (err) {
+    console.error("Error initializing chart:", err);
+    showToast("❌ Error initializing chart", "error");
+    return;
   }
 
-  // Try to load workout stats JSON from a few likely paths
-  const candidates = [
-    "/workout_stats/default_user_workout_stats.json",
-    "./workout_stats/default_user_workout_stats.json",
-    "workout_stats/default_user_workout_stats.json",
-  ];
+  // Aggregate workouts by date
+  const dateMap = {};
+  workouts.forEach(w => {
+    const date = w.workout_date || (w.create_date ? w.create_date.split(" ")[0] : null);
+    if (!date) return;
+    dateMap[date] = (dateMap[date] || 0) + 1;
+  });
+  
+  const dates = Object.keys(dateMap).sort((a,b) => new Date(a) - new Date(b));
+  const counts = dates.map(d => dateMap[d]);
 
-  let stats = null;
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      stats = await res.json();
-      break;
-    } catch (err) {
-      // try next
-    }
-  }
-
-  // Build chart data
-  let dates = [];
-  let counts = [];
-  let avgWeights = [];
-
-  if (stats && Array.isArray(stats.workouts) && stats.workouts.length > 0) {
-    const workouts = stats.workouts;
-    const dateMap = {}; // date -> { count, weights: [] }
-
-    workouts.forEach((w) => {
-      const date =
-        w.workout_date ||
-        (w.create_date ? w.create_date.split(" ")[0] : null) ||
-        (w.create_time
-          ? new Date(w.create_time).toISOString().split("T")[0]
-          : null);
-      if (!date) return;
-      if (!dateMap[date]) dateMap[date] = { count: 0, weights: [] };
-      dateMap[date].count += 1;
-      if (
-        w.weight !== null &&
-        w.weight !== undefined &&
-        !isNaN(Number(w.weight))
-      ) {
-        dateMap[date].weights.push(Number(w.weight));
-      }
-    });
-
-    // Sort dates ascending
-    dates = Object.keys(dateMap).sort((a, b) => new Date(a) - new Date(b));
-    counts = dates.map((d) => dateMap[d].count);
-    avgWeights = dates.map((d) => {
-      const arr = dateMap[d].weights;
-      if (!arr || arr.length === 0) return null;
-      const sum = arr.reduce((s, v) => s + v, 0);
-      return +(sum / arr.length).toFixed(2);
-    });
-  }
-
-  // If no real data found, fallback to sample weekly data
-  if (!dates.length) {
-    dates = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    counts = [1, 2, 1, 3, 1, 2, 1];
-    avgWeights = [25, 27, 26, 28, 26, 30, 29];
-  }
-
-  // Prepare series
-  const series = [
-    {
+  const option = {
+    backgroundColor: '#ffffff',
+    title: { 
+      text: "Workout Progress (Last 30 Days)", 
+      left: "center", 
+      textStyle: { color: "#333", fontSize: 16, fontWeight: "bold" },
+      top: 10
+    },
+    tooltip: { trigger: "axis", backgroundColor: "rgba(255,255,255,0.9)", borderColor: "#ddd" },
+    grid: {
+      left: '12%',
+      right: '12%',
+      bottom: '12%',
+      top: '18%',
+      containLabel: true
+    },
+    xAxis: { 
+      type: "category", 
+      data: dates,
+      axisLabel: { color: "#666", fontSize: 11 },
+      axisLine: { lineStyle: { color: "#ddd" } }
+    },
+    yAxis: { 
+      type: "value", 
+      name: "Workouts",
+      axisLabel: { color: "#666", fontSize: 11 },
+      splitLine: { lineStyle: { color: "#f0f0f0" } },
+      axisLine: { lineStyle: { color: "#ddd" } }
+    },
+    series: [{
       name: "Workouts",
       type: "bar",
       data: counts,
-      itemStyle: { color: "#5470C6" },
-      yAxisIndex: 0,
-    },
-  ];
-
-  // Only include weight series if we have numeric values
-  const hasWeights = avgWeights.some((v) => v !== null && v !== undefined);
-  if (hasWeights) {
-    series.push({
-      name: "Avg Weight (kg)",
-      type: "line",
-      data: avgWeights.map((v) => (v === null ? "-" : v)),
-      smooth: true,
-      yAxisIndex: 1,
-      itemStyle: { color: "#91CC75" },
-    });
-  }
-
-  const option = {
-    title: { text: "Workout Progress", left: "center" },
-    tooltip: { trigger: "axis" },
-    legend: { top: 30 },
-    xAxis: { type: "category", data: dates },
-    yAxis: [
-      { type: "value", name: "Workouts" },
-      { type: "value", name: "Weight (kg)", position: "right", offset: 0 },
-    ],
-    series,
+      itemStyle: { color: "#10b981", borderRadius: [6, 6, 0, 0] },
+      label: { show: false }
+    }]
   };
 
   try {
     progressChart.setOption(option);
-    progressChart.resize();
-    showToast("📈 Progress chart updated", "success");
-  } catch (err) {
+    setTimeout(() => {
+      if (progressChart) progressChart.resize();
+    }, 100);
+    showToast("📈 Progress chart loaded", "success");
+  } catch(err) {
     console.error("Error setting chart option:", err);
     showToast("❌ Error rendering chart", "error");
   }
 
-  // Scroll chat-box to chart
-  chartDiv.scrollIntoView({ behavior: "smooth" });
+  // Load AI summary below the chart
+  await loadProgressSummary(30);
+  
+  // Scroll to chart smoothly
+  if (progressSection && progressSection.scrollIntoView) {
+    setTimeout(() => progressSection.scrollIntoView({behavior:"smooth"}), 300);
+  }
+}
+
+// Hide the progress section
+function hideProgressSummary() {
+  const progressSection = document.getElementById("progress-section");
+  const chart = document.getElementById("progress-chart");
+  const summary = document.getElementById("progress-summary");
+  
+  if (progressSection) progressSection.style.display = "none";
+  if (chart) chart.style.display = "none";
+  if (summary) summary.style.display = "none";
+  
+  try {
+    if (progressChart && typeof progressChart.dispose === "function") {
+      progressChart.dispose();
+      progressChart = null;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// Load progress summary with proper error handling
+async function loadProgressSummary(days = 30) {
+  const summaryLoading = document.getElementById('summaryLoading');
+  const summaryContent = document.getElementById('summaryContent');
+  const summaryElement = document.getElementById('summaryText');
+  const workoutCountEl = document.getElementById('workoutCount');
+  const periodEl = document.getElementById('periodDays');
+
+  if (summaryLoading) summaryLoading.style.display = 'block';
+  if (summaryContent) summaryContent.style.display = 'none';
+  if (summaryElement) summaryElement.textContent = '';
+
+  try {
+    const response = await fetch(`/workout-stats/progress-summary?user_id=default_user&days=${days}`);
+    const data = await response.json();
+    
+    if (!response.ok || data.error) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+
+    if (data.has_data === false) {
+      if (summaryLoading) summaryLoading.style.display = 'none';
+      if (summaryContent) summaryContent.style.display = 'block';
+      if (summaryElement) summaryElement.textContent = data.summary || "No workout data available for analysis. Start logging your workouts to see progress insights!";
+      if (workoutCountEl) workoutCountEl.textContent = data.total_workouts ?? 0;
+      if (periodEl) periodEl.textContent = days;
+      showToast('ℹ️ No workout data to analyze', 'info');
+      return;
+    }
+
+    if (summaryLoading) summaryLoading.style.display = 'none';
+    if (summaryContent) summaryContent.style.display = 'block';
+    if (summaryElement) {
+      if (data.summary && typeof marked !== 'undefined') {
+        summaryElement.innerHTML = marked.parse(data.summary);
+      } else {
+        summaryElement.textContent = data.summary || '';
+      }
+    }
+    if (workoutCountEl) workoutCountEl.textContent = data.total_workouts ?? 0;
+    if (periodEl) periodEl.textContent = days;
+    showToast('🤖 Progress analysis updated!', 'success');
+    
+  } catch (error) {
+    console.error('Error loading progress summary:', error);
+    if (summaryLoading) summaryLoading.style.display = 'none';
+    if (summaryContent) summaryContent.style.display = 'block';
+    if (summaryElement) {
+      summaryElement.textContent = "I'm having trouble analyzing your progress. Make sure you've logged some workouts or try again.";
+    }
+    if (workoutCountEl) workoutCountEl.textContent = 0;
+    if (periodEl) periodEl.textContent = days;
+    showToast('❌ Error loading progress analysis', 'error');
+  }
+}
+
+function refreshProgressSummary() { 
+  loadProgressSummary(30); 
+}
+
+function checkForNewWorkouts(messageText) {
+    if (!messageText) return false;
+    const workoutKeywords = ['kg', 'lbs', 'reps', 'sets', 'bench', 'squat', 'deadlift', 'run', 'km', 'miles', 'minutes'];
+    return workoutKeywords.some(keyword => messageText.toLowerCase().includes(keyword));
 }

@@ -12,10 +12,12 @@ import uuid
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
+
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 load_dotenv()
+
 # Configure RAGFlow + Ollama
 MODEL = os.getenv("MODEL")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -30,13 +32,18 @@ MYSQL_CONFIG = {
     'password': 'infini_rag_flow'
 }
 
-# Create directory for workout stats JSON files
 STATS_DIR = "workout_stats"
 os.makedirs(STATS_DIR, exist_ok=True)
 
-client = OpenAI(api_key=API_KEY, base_url=f"{BASE_URL}/api/v1/chats_openai/{CHAT_ID}")
-rag = RAGFlow(api_key=API_KEY, base_url=BASE_URL)
-assistant = rag.list_chats(id=CHAT_ID)[0]
+try:
+    client = OpenAI(api_key=API_KEY, base_url=f"{BASE_URL}/api/v1/chats_openai/{CHAT_ID}")
+    rag = RAGFlow(api_key=API_KEY, base_url=BASE_URL)
+    assistant = rag.list_chats(id=CHAT_ID)[0]
+    print("✅ OpenAI and RAGFlow clients initialized")
+except Exception as e:
+    print(f"⚠️ Warning initializing clients: {e}")
+    client = None
+    assistant = None
 
 
 def get_mysql_connection():
@@ -97,22 +104,17 @@ def create_workout_stats_table():
 
 
 class AIWorkoutDetector:
-    """AI-powered workout detection using Ollama"""
+    """AI-powered workout detection using Ollama or local LLM"""
 
     def __init__(self, ollama_base_url: str = "http://localhost:11434", model: str = None):
         self.ollama_base_url = ollama_base_url
-        # Use the same model as your main app, or specify a different one
         self.model = model or os.getenv("MODEL", "llama2")
 
     def detect_workouts(self, message: str, conversation_history: List[Dict] = None) -> List[Dict]:
-        """
-        Use AI to detect workout information from natural language.
-        """
-
-        # Build context from recent conversation
+        """Use AI to detect workout information from natural language."""
         context = ""
         if conversation_history:
-            recent_messages = conversation_history[-3:]  # Last 3 messages
+            recent_messages = conversation_history[-3:]
             context = "Recent conversation:\n"
             for msg in recent_messages:
                 role = msg.get('role', 'user')
@@ -120,43 +122,13 @@ class AIWorkoutDetector:
                 context += f"{role}: {content}\n"
             context += "\n"
 
-        # Use OpenAI-style chat completion for better structured output
-        system_prompt = """
-        Extract workouts from the user message. 
-        Return ONLY a JSON array. 
-        If no workout is found, return [].
+        system_prompt = """Extract workouts from the user message. Return ONLY a JSON array.
+For each workout extract: exercise_name, exercise_type ("strength" or "cardio"), weight, weight_unit, reps, sets, duration, duration_unit, distance, distance_unit, calories, notes.
+RULES: Do NOT infer values. Only include if clearly stated. Return a JSON ARRAY, even for one workout. If no workout found, return []. No extra text."""
 
-        FOR EACH workout, extract ONLY these fields:
-
-        - exercise_name
-        - exercise_type ("strength" or "cardio")
-        - weight (number or null)
-        - weight_unit ("kg" or "lbs" or null)
-        - reps (number or null)
-        - sets (number or null)
-        - duration (minutes or null)
-        - duration_unit ("minutes" or "hours" or null)
-        - distance (number or null)
-        - distance_unit ("km" or "miles" or null)
-        - calories (number or null)
-        - notes (string or null)
-
-        RULES:
-        - Do NOT infer distance or duration. Only include if clearly stated.
-        - Do NOT guess calories.
-        - Do NOT include fields not mentioned.
-        - Return a JSON ARRAY, even for one workout.
-        - No extra text.
-
-        Example:
-        "I benched 80kg for 5 reps, 3 sets"
-        → [{"exercise_name":"bench press","exercise_type":"strength","weight":80,"weight_unit":"kg","reps":5,"sets":3}]
-        """
-
-        user_prompt = f"{context}Extract workouts from this message:\n\n{message}"
+        user_prompt = f"{context}Extract workouts from:\n{message}"
 
         try:
-            # Try using Ollama's chat endpoint first (more reliable)
             response = requests.post(
                 f"{self.ollama_base_url}/api/chat",
                 json={
@@ -167,69 +139,38 @@ class AIWorkoutDetector:
                     ],
                     "stream": False,
                     "format": "json",
-                    "options": {
-                        "temperature": 0.1,
-                        "num_predict": 1000
-                    }
+                    "options": {"temperature": 0.1, "num_predict": 1000}
                 },
                 timeout=60
             )
 
             if response.status_code != 200:
-                print(f"⚠️ Ollama chat API error: {response.status_code} - {response.text}")
-                # Fallback to generate endpoint
-                return self._detect_with_generate(system_prompt, user_prompt)
+                print(f"⚠️ Ollama error: {response.status_code}")
+                return []
 
             result = response.json()
             ai_response = result.get('message', {}).get('content', '[]').strip()
-
-            print(f"🤖 Raw AI response: {ai_response[:300]}")
-
-
-            # Clean up the response
             ai_response = self._clean_json_response(ai_response)
 
             workouts = json.loads(ai_response)
-
             if not isinstance(workouts, list):
-                print(f"⚠️ AI response is not a list: {type(workouts)}")
-                return []
+                workouts = [workouts] if isinstance(workouts, dict) else []
 
-            # Validate and clean
-            validated_workouts = self._validate_workouts(workouts)
+            validated = self._validate_workouts(workouts)
+            if validated:
+                print(f"💪 AI detected {len(validated)} workout(s)")
+            return validated
 
-            if validated_workouts:
-                print(
-                    f"💪 AI detected {len(validated_workouts)} workout(s): {[w['exercise_name'] for w in validated_workouts]}")
-            else:
-                print(f"ℹ️ No workouts detected in message: {message[:50]}")
-
-            return validated_workouts
-
-        except requests.exceptions.Timeout:
-            print("⚠️ Ollama timeout - skipping workout detection")
-            return []
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ Ollama request error: {e}")
-            return []
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON parse error: {e}")
-            if 'ai_response' in locals():
-                print(f"Response was: {ai_response[:300]}")
-            return []
         except Exception as e:
-            print(f"⚠️ Unexpected error in workout detection: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"⚠️ Workout detection error: {e}")
             return []
 
     def _clean_json_response(self, response: str) -> str:
         """Clean up AI response to extract valid JSON"""
         if response.strip().startswith("{"):
             return f"[{response}]"
+        
         response = response.strip()
-
-        # Remove markdown code blocks
         if '```' in response:
             parts = response.split('```')
             for part in parts:
@@ -240,7 +181,6 @@ class AIWorkoutDetector:
                     response = part
                     break
 
-        # Find the JSON array in the response
         start_idx = response.find('[')
         end_idx = response.rfind(']')
 
@@ -251,17 +191,13 @@ class AIWorkoutDetector:
 
     def _validate_workouts(self, workouts: list) -> List[Dict]:
         """Validate and clean workout data"""
-
-        validated_workouts = []
+        validated = []
 
         for workout in workouts:
-            if not isinstance(workout, dict):
+            if not isinstance(workout, dict) or not workout.get('exercise_name'):
                 continue
 
-            if not workout.get('exercise_name'):
-                continue
-
-            validated = {
+            item = {
                 'exercise_name': str(workout.get('exercise_name', '')).lower().strip(),
                 'exercise_type': workout.get('exercise_type', 'other'),
                 'weight': None,
@@ -277,89 +213,45 @@ class AIWorkoutDetector:
             }
 
             # Safely convert numeric fields
-            if workout.get('weight'):
-                try:
-                    validated['weight'] = float(workout['weight'])
-                    validated['weight_unit'] = workout.get('weight_unit', 'kg')
-                except (ValueError, TypeError):
-                    pass
+            try:
+                if workout.get('weight'):
+                    item['weight'] = float(workout['weight'])
+                    item['weight_unit'] = workout.get('weight_unit', 'kg')
+                if workout.get('reps'):
+                    item['reps'] = int(workout['reps'])
+                if workout.get('sets'):
+                    item['sets'] = int(workout['sets'])
+                if workout.get('duration'):
+                    item['duration'] = int(workout['duration'])
+                    item['duration_unit'] = workout.get('duration_unit', 'minutes')
+                if workout.get('distance'):
+                    item['distance'] = float(workout['distance'])
+                    item['distance_unit'] = workout.get('distance_unit', 'km')
+                if workout.get('calories'):
+                    item['calories'] = int(workout['calories'])
+            except (ValueError, TypeError):
+                pass
 
-            if workout.get('reps'):
-                try:
-                    validated['reps'] = int(workout['reps'])
-                except (ValueError, TypeError):
-                    pass
+            validated.append(item)
 
-            if workout.get('sets'):
-                try:
-                    validated['sets'] = int(workout['sets'])
-                except (ValueError, TypeError):
-                    pass
+        return validated
 
-            if workout.get('duration'):
-                try:
-                    validated['duration'] = int(workout['duration'])
-                    validated['duration_unit'] = workout.get('duration_unit', 'minutes')
-                except (ValueError, TypeError):
-                    pass
 
-            if workout.get('distance'):
-                try:
-                    validated['distance'] = float(workout['distance'])
-                    validated['distance_unit'] = workout.get('distance_unit', 'km')
-                except (ValueError, TypeError):
-                    pass
-
-            if workout.get('calories'):
-                try:
-                    validated['calories'] = int(workout['calories'])
-                except (ValueError, TypeError):
-                    pass
-
-            validated_workouts.append(validated)
-
-        return validated_workouts
-
-    def _detect_with_generate(self, system_prompt: str, user_prompt: str) -> List[Dict]:
-        """Fallback method using generate endpoint"""
-        try:
-            full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nJSON array:"
-
-            response = requests.post(
-                f"{self.ollama_base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": full_prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.1,
-                        "num_predict": 1000
-                    }
-                },
-                timeout=20
-            )
-
-            if response.status_code != 200:
-                print(f"⚠️ Generate endpoint also failed: {response.status_code}")
-                return []
-
-            result = response.json()
-            ai_response = result.get('response', '[]').strip()
-            ai_response = self._clean_json_response(ai_response)
-
-            workouts = json.loads(ai_response)
-            return self._validate_workouts(workouts) if isinstance(workouts, list) else []
-
-        except Exception as e:
-            print(f"⚠️ Generate fallback error: {e}")
-            return []
-
-# Initialize the detector globally
+# Initialize detector
 workout_detector = AIWorkoutDetector(
     ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     model=os.getenv("WORKOUT_DETECTION_MODEL", MODEL)
 )
+
+
+def extract_workout_data_with_ai(message: str, conversation_history: List[Dict] = None) -> List[Dict]:
+    """Extract workout data using AI detection"""
+    try:
+        return workout_detector.detect_workouts(message, conversation_history)
+    except Exception as e:
+        print(f"Error in AI workout detection: {e}")
+        return []
+
 
 def save_workout_stats(session_id, user_id, workouts, workout_date=None):
     """Save workout statistics to MySQL and JSON file"""
@@ -383,7 +275,6 @@ def save_workout_stats(session_id, user_id, workouts, workout_date=None):
 
         for workout in workouts:
             workout_id = uuid.uuid4().hex
-
             insert_query = """
             INSERT INTO workout_stats 
             (id, user_id, session_id, exercise_name, exercise_type, 
@@ -394,24 +285,14 @@ def save_workout_stats(session_id, user_id, workouts, workout_date=None):
             """
 
             values = (
-                workout_id,
-                user_id,
-                session_id,
-                workout['exercise_name'],
-                workout['exercise_type'],
-                workout['weight'],
-                workout['weight_unit'],
-                workout['reps'],
-                workout['sets'],
-                workout['duration'],
-                workout['duration_unit'],
-                workout['distance'],
-                workout['distance_unit'],
-                workout['calories'],
-                workout['notes'],
-                workout_date,
-                now_ms,
-                now_dt
+                workout_id, user_id, session_id,
+                workout['exercise_name'], workout['exercise_type'],
+                workout['weight'], workout['weight_unit'],
+                workout['reps'], workout['sets'],
+                workout['duration'], workout['duration_unit'],
+                workout['distance'], workout['distance_unit'],
+                workout['calories'], workout['notes'],
+                workout_date, now_ms, now_dt
             )
 
             cursor.execute(insert_query, values)
@@ -421,8 +302,6 @@ def save_workout_stats(session_id, user_id, workouts, workout_date=None):
         connection.close()
 
         print(f"💪 Saved {len(workouts)} workout stats to MySQL")
-
-        # Also save to JSON file for easy frontend access
         export_workout_stats_to_json(user_id)
 
     except Exception as e:
@@ -437,17 +316,14 @@ def export_workout_stats_to_json(user_id="default_user"):
             return None
 
         cursor = connection.cursor(dictionary=True)
-
         query = """
         SELECT * FROM workout_stats 
         WHERE user_id = %s 
         ORDER BY workout_date DESC, create_time DESC
         """
-
         cursor.execute(query, (user_id,))
         workouts = cursor.fetchall()
 
-        # Convert decimal and date objects to JSON-serializable formats
         for workout in workouts:
             if workout.get('weight'):
                 workout['weight'] = float(workout['weight'])
@@ -461,7 +337,6 @@ def export_workout_stats_to_json(user_id="default_user"):
         cursor.close()
         connection.close()
 
-        # Save to JSON file
         json_file_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
         with open(json_file_path, 'w') as f:
             json.dump({
@@ -478,16 +353,6 @@ def export_workout_stats_to_json(user_id="default_user"):
         print(f"Error exporting workout stats: {e}")
         return None
 
-def extract_workout_data_with_ai(message: str, conversation_history: List[Dict] = None) -> List[Dict]:
-    """
-    Extract workout data using AI instead of regex.
-    Falls back to empty list if AI detection fails.
-    """
-    try:
-        return workout_detector.detect_workouts(message, conversation_history)
-    except Exception as e:
-        print(f"Error in AI workout detection: {e}")
-        return []
 
 def save_to_mysql(session_id: str, question: str, answer: str):
     """Save Q&A into MySQL conversation table and extract workout stats with AI"""
@@ -498,8 +363,6 @@ def save_to_mysql(session_id: str, question: str, answer: str):
             return
 
         cursor = connection.cursor()
-
-        # Fetch existing conversation for context
         cursor.execute("SELECT message FROM conversation WHERE dialog_id = %s", (session_id,))
         row = cursor.fetchone()
         messages = []
@@ -507,9 +370,8 @@ def save_to_mysql(session_id: str, question: str, answer: str):
             try:
                 messages = json.loads(row[0])
             except Exception as je:
-                print(f"JSON parse error in MySQL messages: {je}")
+                print(f"JSON parse error: {je}")
 
-        # Append new messages
         messages.append({"role": "user", "content": question})
         messages.append({"role": "assistant", "content": answer})
 
@@ -518,45 +380,26 @@ def save_to_mysql(session_id: str, question: str, answer: str):
 
         if row:
             cursor.execute(
-                """
-                UPDATE conversation
-                SET message=%s, update_time=%s, update_date=%s
-                WHERE dialog_id=%s
-                """,
+                "UPDATE conversation SET message=%s, update_time=%s, update_date=%s WHERE dialog_id=%s",
                 (json.dumps(messages), now_ms, now_dt, session_id)
             )
         else:
             cursor.execute(
-                """
-                INSERT INTO conversation 
+                """INSERT INTO conversation 
                 (id, create_time, create_date, update_time, update_date, dialog_id, name, message, reference, user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    uuid.uuid4().hex,
-                    now_ms, now_dt,
-                    now_ms, now_dt,
-                    session_id,
-                    question[:255],
-                    json.dumps(messages),
-                    "[]",
-                    "default_user"
-                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (uuid.uuid4().hex, now_ms, now_dt, now_ms, now_dt, session_id, question[:255], json.dumps(messages), "[]", "default_user")
             )
 
         connection.commit()
         cursor.close()
         connection.close()
-        print(f"💾 Saved conversation to MySQL for session {session_id}")
+        print(f"💾 Saved conversation to MySQL")
 
-        # Use AI to extract workout data with conversation context
-        workouts = extract_workout_data_with_ai(question, messages[-6:-1])  # Pass recent context
-
+        workouts = extract_workout_data_with_ai(question, messages[-6:-1])
         if workouts:
-            print(f"🏋️ AI detected {len(workouts)} workout(s): {[w['exercise_name'] for w in workouts]}")
+            print(f"🏋️ AI detected {len(workouts)} workout(s)")
             save_workout_stats(session_id, "default_user", workouts)
-        else:
-            print(f"ℹ️ No workouts detected in message")
 
     except Exception as e:
         print(f"MySQL save error: {e}")
@@ -565,6 +408,8 @@ def save_to_mysql(session_id: str, question: str, answer: str):
 def get_or_create_default_session():
     """Get the most recent session or create a new one"""
     try:
+        if not assistant:
+            return None
         sessions = assistant.list_sessions(page=1, page_size=1)
         if sessions and len(sessions) > 0:
             return sessions[0].id
@@ -579,30 +424,27 @@ def get_or_create_default_session():
 def save_conversation_to_ragflow(session_id: str, question: str, answer: str):
     """Save the complete Q&A to RAGFlow using REST API"""
     try:
-        headers = {
-            'Authorization': f'Bearer {API_KEY}',
-            'Content-Type': 'application/json'
-        }
+        headers = {'Authorization': f'Bearer {API_KEY}', 'Content-Type': 'application/json'}
         url = f"{BASE_URL}/api/v1/chats/{CHAT_ID}/completions"
-        payload = {
-            "question": question,
-            "session_id": session_id,
-            "stream": False
-        }
-        response = requests.post(url, headers=headers, json=payload)
+        payload = {"question": question, "session_id": session_id, "stream": False}
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
         if response.status_code == 200:
             print(f"✓ Conversation saved to session {session_id}")
         else:
-            print(f"✗ Error saving to RAGFlow: {response.status_code} - {response.text}")
+            print(f"✗ Error saving to RAGFlow: {response.status_code}")
     except Exception as e:
         print(f"✗ Error saving to RAGFlow: {e}")
 
 
 def generate_response(question: str, session_id: str,
                       system_prompt: str = "You are a helpful fitness and health assistant."):
-    """Generator that yields assistant text chunks"""
+    """Generator that yields assistant text chunks with proper SSE format"""
     full_response = ""
     try:
+        if not client:
+            yield f"data: {json.dumps({'error': 'AI client not initialized'})}\n\n"
+            return
+
         completion = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -610,36 +452,44 @@ def generate_response(question: str, session_id: str,
                 {"role": "user", "content": question}
             ],
             stream=True,
-            extra_body={
-                "reference": True,
-                "session_id": session_id
-            }
+            extra_body={"reference": True, "session_id": session_id}
         )
+        
         for chunk in completion:
-            delta = chunk.choices[0].delta
-            if hasattr(delta, "content") and delta.content:
-                content = delta.content
-                full_response += content
-                yield f"data: {json.dumps({'content': content})}\n\n"
+            try:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    content = delta.content
+                    full_response += content
+                    yield f"data: {json.dumps({'content': content})}\n\n"
+            except Exception as e:
+                print(f"Error processing chunk: {e}")
+                continue
 
         if full_response:
-            # Save to MySQL (which also extracts workout stats)
-            thread = threading.Thread(
-                target=save_to_mysql,
-                args=(session_id, question, full_response)
-            )
-            thread.daemon = True
-            thread.start()
+            # Save in background threads
+            try:
+                thread = threading.Thread(
+                    target=save_to_mysql,
+                    args=(session_id, question, full_response),
+                    daemon=True
+                )
+                thread.start()
+            except Exception as e:
+                print(f"Error starting save thread: {e}")
 
-            # (Optional) Save to RAGFlow too
-            thread2 = threading.Thread(
-                target=save_conversation_to_ragflow,
-                args=(session_id, question, full_response)
-            )
-            thread2.daemon = True
-            thread2.start()
+            try:
+                thread2 = threading.Thread(
+                    target=save_conversation_to_ragflow,
+                    args=(session_id, question, full_response),
+                    daemon=True
+                )
+                thread2.start()
+            except Exception as e:
+                print(f"Error starting RAGFlow thread: {e}")
 
         yield f"data: {json.dumps({'done': True})}\n\n"
+        
     except Exception as e:
         print(f"Error in generate_response: {e}")
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -647,37 +497,40 @@ def generate_response(question: str, session_id: str,
 
 @app.route("/")
 def index():
-    # Create workout stats table on startup
-    create_workout_stats_table()
-
-    # Ensure there's always an active session
-    if "active_session_id" not in session:
-        default_session = get_or_create_default_session()
-        if default_session:
-            session["active_session_id"] = default_session
-            print(f"Initialized session with ID: {default_session}")
-    return render_template("index.html")
+    try:
+        create_workout_stats_table()
+        if "active_session_id" not in session:
+            default_session = get_or_create_default_session()
+            if default_session:
+                session["active_session_id"] = default_session
+                print(f"Initialized session with ID: {default_session}")
+        return render_template("index.html")
+    except Exception as e:
+        print(f"Error in index route: {e}")
+        return {"error": str(e)}, 500
 
 
 @app.route("/ask", methods=["GET"])
 def ask():
     """Handle chat questions"""
-    question = request.args.get("question")
-    session_id = request.args.get("session_id") or session.get("active_session_id")
+    try:
+        question = request.args.get("question")
+        session_id = request.args.get("session_id") or session.get("active_session_id")
 
-    if not question:
-        return jsonify({"error": "No question provided"}), 400
+        if not question:
+            return jsonify({"error": "No question provided"}), 400
 
-    # Auto-create session if none exists
-    if not session_id:
-        session_id = get_or_create_default_session()
         if not session_id:
-            return jsonify({"error": "Could not create session"}), 500
+            session_id = get_or_create_default_session()
+            if not session_id:
+                return jsonify({"error": "Could not create session"}), 500
+            session["active_session_id"] = session_id
+
         session["active_session_id"] = session_id
-
-    session["active_session_id"] = session_id
-    return Response(generate_response(question, session_id), mimetype="text/event-stream")
-
+        return Response(generate_response(question, session_id), mimetype="text/event-stream")
+    except Exception as e:
+        print(f"Error in ask route: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/workout-stats", methods=["GET"])
@@ -918,7 +771,6 @@ def manual_add_workout():
         return jsonify({"error": str(e)}), 500
 
 
-# Keep all your existing routes below...
 @app.route("/sessions", methods=["GET"])
 def list_sessions():
     """List all chat sessions"""
@@ -1520,171 +1372,135 @@ def debug_system_prompt():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/test-workout-detection", methods=["POST"])
-def test_workout_detection():
-    """Test endpoint to see what the AI detects from a message"""
+@app.route("/workout-stats/load-json", methods=["GET"])
+def load_workout_json():
+    """Load workout stats from JSON file"""
+    user_id = request.args.get("user_id", "default_user")
+    
     try:
-        data = request.get_json()
-        message = data.get('message', '')
-        debug = data.get('debug', False)
-
-        if not message:
-            return jsonify({"error": "No message provided"}), 400
-
-        if debug:
-            # Return detailed debug info
-            return test_workout_detection_debug(message)
-
-        workouts = extract_workout_data_with_ai(message)
-
-        return jsonify({
-            "message": message,
-            "detected_workouts": workouts,
-            "count": len(workouts)
-        })
-
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }), 500
-
-
-@app.route("/test-workout-detection-debug", methods=["POST"])
-def test_workout_detection_debug(message=None):
-    """Debug endpoint with detailed AI response info"""
-    try:
-        if message is None:
-            data = request.get_json()
-            message = data.get('message', '')
-
-        if not message:
-            return jsonify({"error": "No message provided"}), 400
-
-        # Test Ollama connection first
-        try:
-            test_response = requests.get(f"{workout_detector.ollama_base_url}/api/tags", timeout=5)
-            ollama_available = test_response.status_code == 200
-            available_models = []
-            if ollama_available:
-                models_data = test_response.json()
-                available_models = [m.get('name', 'unknown') for m in models_data.get('models', [])]
-        except Exception as e:
-            ollama_available = False
-            available_models = []
-
-        # Try to get raw AI response
-        system_prompt = """You are a workout extraction assistant. Extract workout data and return ONLY a JSON array.
-
-Extract: exercise_name, exercise_type (strength/cardio/other), weight, weight_unit, reps, sets, duration, duration_unit, distance, distance_unit.
-
-Examples:
-"I benched 80kg for 5 reps, 3 sets" → [{"exercise_name": "bench press", "exercise_type": "strength", "weight": 80, "weight_unit": "kg", "reps": 5, "sets": 3}]
-"Ran 5km" → [{"exercise_name": "running", "exercise_type": "cardio", "distance": 5, "distance_unit": "km"}]
-"What should I do?" → []"""
-
-        ai_response_raw = None
-        ai_response_cleaned = None
-        parse_error = None
-
-        try:
-            response = requests.post(
-                f"{workout_detector.ollama_base_url}/api/chat",
-                json={
-                    "model": workout_detector.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Extract workouts from: {message}"}
-                    ],
-                    "stream": False,
-                    "format": "json"
-                },
-                timeout=60
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                ai_response_raw = result.get('message', {}).get('content', '')
-                ai_response_cleaned = workout_detector._clean_json_response(ai_response_raw)
-
-                try:
-                    parsed = json.loads(ai_response_cleaned)
-
-                    # 🔥 Fix: model returns a dict, not a list — wrap it
-                    if isinstance(parsed, dict):
-                        parsed = [parsed]
-
-                    workouts = workout_detector._validate_workouts(parsed)
-                except json.JSONDecodeError as e:
-                    parse_error = str(e)
-                    workouts = []
-            else:
-                ai_response_raw = f"HTTP {response.status_code}: {response.text}"
-                workouts = []
-        except Exception as e:
-            ai_response_raw = f"Request error: {str(e)}"
-            workouts = []
-
-        return jsonify({
-            "message": message,
-            "ollama_config": {
-                "url": workout_detector.ollama_base_url,
-                "model": workout_detector.model,
-                "available": ollama_available,
-                "available_models": available_models
-            },
-            "ai_response": {
-                "raw": ai_response_raw[:1000] if ai_response_raw else None,
-                "cleaned": ai_response_cleaned[:1000] if ai_response_cleaned else None,
-                "parse_error": parse_error
-            },
-            "detected_workouts": workouts,
-            "count": len(workouts)
-        })
-
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }), 500
-
-
-@app.route("/workout-detection/config", methods=["GET", "POST"])
-def workout_detection_config():
-    """Get or update workout detection configuration"""
-    global workout_detector
-
-    if request.method == "GET":
-        return jsonify({
-            "ollama_url": workout_detector.ollama_base_url,
-            "model": workout_detector.model
-        })
-
-    elif request.method == "POST":
-        try:
-            data = request.get_json()
-
-            if 'ollama_url' in data:
-                workout_detector.ollama_base_url = data['ollama_url']
-
-            if 'model' in data:
-                workout_detector.model = data['model']
-
+        json_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+        
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return jsonify(data)
+        else:
             return jsonify({
-                "success": True,
-                "message": "Workout detection config updated",
-                "config": {
-                    "ollama_url": workout_detector.ollama_base_url,
-                    "model": workout_detector.model
-                }
+                "user_id": user_id,
+                "total_workouts": 0,
+                "last_updated": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "workouts": []
             })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+    
+    except Exception as e:
+        print(f"Error loading workout JSON: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/workout-stats/progress-summary", methods=["GET"])
+def get_progress_summary():
+    """Get AI-generated progress summary for workouts"""
+    user_id = request.args.get("user_id", "default_user")
+    days = request.args.get("days", 30, type=int)
+    
+    try:
+        connection = get_mysql_connection()
+        
+        # Try database first
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+            query = """
+            SELECT * FROM workout_stats 
+            WHERE user_id = %s 
+            AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            ORDER BY workout_date DESC, create_time DESC
+            """
+            cursor.execute(query, (user_id, days))
+            workouts = cursor.fetchall()
+            cursor.close()
+            connection.close()
+        else:
+            workouts = []
+        
+        # If no DB data, try JSON file
+        if not workouts:
+            json_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+            if os.path.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    all_workouts = data.get('workouts', [])
+                    cutoff_date = (datetime.now() - timedelta(days=days)).date()
+                    workouts = [
+                        w for w in all_workouts 
+                        if datetime.strptime(w['workout_date'], '%Y-%m-%d').date() >= cutoff_date
+                    ]
+        
+        # If still no data, return error message
+        if not workouts:
+            return jsonify({
+                "has_data": False,
+                "summary": "No workout data available for analysis. Start logging your workouts to see progress insights!",
+                "total_workouts": 0
+            })
+        
+        # Summarize workout data
+        total_workouts = len(workouts)
+        days_worked = len(set(w.get('workout_date') for w in workouts if w.get('workout_date')))
+        
+        strength_workouts = [w for w in workouts if w.get('exercise_type') == 'strength']
+        cardio_workouts = [w for w in workouts if w.get('exercise_type') == 'cardio']
+        
+        strength_summary = ""
+        if strength_workouts:
+            total_volume = sum(
+                float(w.get('weight', 0)) * int(w.get('reps', 0)) * int(w.get('sets', 0))
+                for w in strength_workouts if w.get('weight') and w.get('reps') and w.get('sets')
+            )
+            max_weight = max(float(w.get('weight', 0)) for w in strength_workouts if w.get('weight'))
+            strength_summary = f"💪 Strength: {len(strength_workouts)} sessions, {total_volume:.0f} total volume, {max_weight:.1f}kg max"
+        
+        cardio_summary = ""
+        if cardio_workouts:
+            total_distance = sum(float(w.get('distance', 0)) for w in cardio_workouts if w.get('distance'))
+            total_duration = sum(int(w.get('duration', 0)) for w in cardio_workouts if w.get('duration'))
+            cardio_summary = f"🏃 Cardio: {len(cardio_workouts)} sessions, {total_distance:.1f}km distance, {total_duration} minutes"
+        
+        # Generate motivational summary
+        summary = f"""## 📊 Your Progress Summary
+
+Over the last {days} days, you've completed **{total_workouts} workouts** across **{days_worked} days**!
+
+{strength_summary}
+
+{cardio_summary}
+
+### 🎯 Keep It Up!
+You're building great momentum. The consistency you're showing is exactly what leads to results. Keep logging your workouts and you'll see amazing progress!
+"""
+        
+        return jsonify({
+            "has_data": True,
+            "summary": summary,
+            "total_workouts": total_workouts,
+            "days_worked": days_worked
+        })
+    
+    except Exception as e:
+        print(f"Error generating progress summary: {e}")
+        return jsonify({
+            "has_data": False,
+            "summary": "Error analyzing progress. Please try again.",
+            "total_workouts": 0,
+            "error": str(e)
+        })
 
 
 if __name__ == "__main__":
-    # Create workout stats table on startup
-    create_workout_stats_table()
-    app.run(debug=True, threaded=True)
+    print("🚀 Starting FitCoach AI server...")
+    try:
+        create_workout_stats_table()
+        app.run(debug=True, threaded=True, host='0.0.0.0', port=5000)
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
