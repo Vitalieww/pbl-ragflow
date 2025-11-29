@@ -286,9 +286,13 @@
       padding: 20px 30px;
       background: linear-gradient(to bottom, #ecfdf5, #f0fdf4);
       border-bottom: 1px solid var(--border);
+      border-top: 1px solid var(--border);
       display: flex;
       gap: 15px;
       overflow-x: auto;
+      justify-content: center;
+      align-items: center;
+      flex-shrink: 0;
     }
 
     body.dark-mode .quick-actions {
@@ -306,6 +310,7 @@
       display: flex;
       align-items: center;
       gap: 12px;
+      flex-shrink: 0;
     }
 
     body.dark-mode .action-card {
@@ -335,13 +340,22 @@
       font-size: 12px;
     }
 
-    /* Suggested Prompts */
+    /* Suggested Prompts - NOW POSITIONED BELOW QUICK ACTIONS */
     .suggested-prompts {
       padding: 15px 30px;
       background: var(--bg-light);
       border-bottom: 1px solid var(--border);
       overflow-x: auto;
       white-space: nowrap;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    body.dark-mode .suggested-prompts {
+      background: var(--bg-dark);
     }
 
     .prompt-chip {
@@ -350,11 +364,12 @@
       background: white;
       border: 1px solid var(--border);
       border-radius: 20px;
-      margin-right: 10px;
       cursor: pointer;
       font-size: 13px;
       color: var(--text-dark);
       transition: all 0.2s;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
 
     body.dark-mode .prompt-chip {
@@ -568,6 +583,7 @@
       background: white;
       border-top: 1px solid var(--border);
       box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+      flex-shrink: 0;
     }
 
     body.dark-mode .chat-input-container {
@@ -874,30 +890,64 @@
       font-size: 24px;
     }
 
-    /* Progress summary styles (AI resume under the chart) - adjusted to match chart width */
-    #progress-summary {
-      display: none; /* toggled by JS */
-      width: 80%;
-      margin: 20px 10%;
-      box-sizing: border-box;
-      padding: 0 20px;
+    /* Progress Chart Section - NEW */
+    #progress-section {
+      width: 100%;
+      padding: 20px 30px;
+      background: white;
+      border-bottom: 2px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    body.dark-mode #progress-section {
+      background: var(--bg-light);
     }
 
     #progress-chart {
-      width: 80%;
-      margin: 20px 10%;
+      width: 100% !important;
+      height: 350px !important;
       box-sizing: border-box;
-      height: 300px;
+      margin: 0 !important;
+      padding: 0 !important;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    }
+
+    /* Progress summary styles */
+    #progress-summary {
+      display: none;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 20px 0 0 0;
     }
 
     .summary-section {
-      /* slightly tighter max-width so content looks consistent within the 80% container */
       max-width: none;
       background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(250,250,250,0.95));
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 18px;
       box-shadow: 0 6px 24px rgba(2,6,23,0.06);
+    }
+
+    body.dark-mode .summary-section {
+      background: linear-gradient(180deg, rgba(15,30,26,0.9), rgba(10,22,18,0.95));
+      color: var(--text-dark);
+    }
+
+    .summary-card {
+      width: 100%;
+    }
+
+    .loading-spinner {
+      padding: 20px;
+      text-align: center;
+      color: var(--text-light);
+      font-style: italic;
+    }
+
+    .loading-spinner p {
+      margin: 0;
     }
 
     /* Close button for progress summary */
@@ -921,17 +971,46 @@
       color: var(--text-dark);
     }
 
-    /* ensure close button is visible in dark mode */
     body.dark-mode .close-summary-btn {
       color: var(--text-light);
     }
 
-    /* Responsive: use near-full width on small screens */
+    body.dark-mode .close-summary-btn:hover {
+      background: rgba(255,255,255,0.1);
+      color: var(--text-dark);
+    }
+
+    /* Quick Actions */
+    .quick-actions {
+      padding: 20px 30px;
+      background: linear-gradient(to bottom, #ecfdf5, #f0fdf4);
+      border-bottom: 1px solid var(--border);
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 15px;
+      overflow-x: auto;
+      justify-content: center;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    /* ...rest of existing CSS... */
+
     @media (max-width: 768px) {
-      #progress-summary,
+      #progress-section {
+        padding: 12px 16px;
+      }
+
       #progress-chart {
-        width: 96%;
-        margin: 12px 2%;
+        height: 250px !important;
+      }
+
+      .summary-section {
+        padding: 12px;
+      }
+
+      .summary-section h3 {
+        font-size: 16px;
       }
     }
 

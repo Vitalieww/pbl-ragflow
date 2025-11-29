@@ -7,8 +7,9 @@ let userProfile = {};
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   loadSessions();
-  loadUserData(); // Replace loadProfile() and loadSettings() with this
+  loadUserData();
   loadStats();
+  loadWorkoutDataFromJson(); // NEW: Load JSON on startup
   initializeVoiceRecognition();
 
   // Auto-resize textarea
@@ -26,6 +27,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // File upload
   document.getElementById("file-input").addEventListener("change", handleFiles);
 });
+
+// NEW: Load workout data from JSON file
+let cachedJsonWorkouts = [];
+
+async function loadWorkoutDataFromJson() {
+  try {
+    const res = await fetch("/workout-stats/load-json?user_id=default_user");
+    const data = await res.json();
+    if (data && data.workouts && Array.isArray(data.workouts)) {
+      cachedJsonWorkouts = data.workouts;
+      console.log(`✅ Loaded ${cachedJsonWorkouts.length} workouts from JSON`);
+    }
+  } catch (err) {
+    console.error("Error loading JSON workouts:", err);
+    cachedJsonWorkouts = [];
+  }
+}
 
 // Load user profile
 function loadProfile() {
@@ -349,14 +367,18 @@ async function renameSession(sessionId, newName) {
 
 // Hide the progress summary (and chart if desired)
 function hideProgressSummary() {
-  const summary = document.getElementById("progress-summary");
+  const progressSection = document.getElementById("progress-section");
   const chart = document.getElementById("progress-chart");
-  if (summary) summary.style.display = "none";
-  // keep chart hidden if you prefer to hide both; remove the next line if chart should remain
+  const summary = document.getElementById("progress-summary");
+  
+  if (progressSection) progressSection.style.display = "none";
   if (chart) chart.style.display = "none";
+  if (summary) summary.style.display = "none";
+  
   try {
     if (progressChart && typeof progressChart.dispose === "function") {
-      progressChart.clear();
+      progressChart.dispose();
+      progressChart = null;
     }
   } catch (e) { /* ignore */ }
 }
@@ -1012,74 +1034,177 @@ window.onclick = function (event) {
 
 var progressChart; // Store chart instance
 
-// Replace showProgressChart with a version that DOES NOT use fake sample data
+// Replace showProgressChart with fixed version
 async function showProgressChart() {
+  const progressSection = document.getElementById("progress-section");
   const chartDiv = document.getElementById("progress-chart");
   const summaryElement = document.getElementById("progress-summary");
+  
+  // Show progress section
+  if (progressSection) progressSection.style.display = "block";
+  if (chartDiv) chartDiv.style.display = "block";
   if (summaryElement) summaryElement.style.display = "block";
 
+  // Load ECharts if not already loaded
   if (typeof echarts === "undefined") {
     const script = document.createElement("script");
     script.src = "https://cdn.jsdelivr.net/npm/echarts@5.4.2/dist/echarts.min.js";
-    script.onload = () => setTimeout(() => showProgressChart(), 50);
+    script.onload = () => setTimeout(() => showProgressChart(), 100);
     script.onerror = () => showToast("❌ Failed to load chart library", "error");
     document.head.appendChild(script);
     return;
   }
 
-  // fetch from backend; backend may return DB rows or fallback to JSON
+  // Fetch from backend first, fallback to cached JSON
   let workouts = [];
   try {
     const res = await fetch(`/workout-stats?user_id=default_user&days=30`);
     const data = await res.json();
-    if (data && Array.isArray(data.workouts)) workouts = data.workouts;
-    else if (data && Array.isArray(data)) workouts = data;
+    if (data && Array.isArray(data.workouts) && data.workouts.length > 0) {
+      workouts = data.workouts;
+      console.log(`📊 Loaded ${workouts.length} workouts from database`);
+    }
   } catch (err) {
-    console.error("Error fetching workout stats:", err);
-    showToast("❌ Error loading workout stats", "error");
+    console.error("Error fetching workout stats from DB:", err);
   }
 
-  // If no real data: hide chart and show progress summary message (backend handles has_data)
+  // Fallback to cached JSON if DB is empty
   if (!workouts || workouts.length === 0) {
-    try { if (progressChart && typeof progressChart.dispose === "function") progressChart.clear(); } catch(e){}
+    if (cachedJsonWorkouts.length > 0) {
+      console.log("📦 Using cached JSON workouts as fallback");
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 30);
+      workouts = cachedJsonWorkouts.filter(w => new Date(w.workout_date) >= cutoff);
+    }
+  }
+
+  // If still no data: hide chart and show only progress summary
+  if (!workouts || workouts.length === 0) {
+    try { 
+      if (progressChart && typeof progressChart.dispose === "function") {
+        progressChart.dispose();
+        progressChart = null;
+      } 
+    } catch(e){}
+    
     if (chartDiv) chartDiv.style.display = "none";
     await loadProgressSummary(30);
     return;
   }
 
-  // Render chart with counts per date
-  if (chartDiv) chartDiv.style.display = "block";
+  // Ensure chart div is visible and properly sized
+  if (chartDiv) {
+    chartDiv.style.display = "block";
+    chartDiv.style.width = "100%";
+    chartDiv.style.height = "350px";
+    // Force reflow
+    void chartDiv.offsetHeight;
+  }
+  
   try {
-    if (!progressChart) progressChart = echarts.init(chartDiv);
-    else progressChart.clear();
+    // Dispose old chart instance
+    if (progressChart) {
+      try {
+        progressChart.dispose();
+      } catch(e) {}
+    }
+    
+    // Initialize chart
+    progressChart = echarts.init(chartDiv, null, { renderer: 'canvas', useDirtyRect: true });
   } catch (err) {
     console.error("Error initializing chart:", err);
     showToast("❌ Error initializing chart", "error");
     return;
   }
 
+  // Aggregate workouts by date
   const dateMap = {};
   workouts.forEach(w => {
     const date = w.workout_date || (w.create_date ? w.create_date.split(" ")[0] : null);
     if (!date) return;
     dateMap[date] = (dateMap[date] || 0) + 1;
   });
-  const dates = Object.keys(dateMap).sort((a,b)=> new Date(a)-new Date(b));
+  
+  const dates = Object.keys(dateMap).sort((a,b) => new Date(a) - new Date(b));
   const counts = dates.map(d => dateMap[d]);
 
-  const option = { title:{text:"Workout Progress (count)", left:"center"}, tooltip:{trigger:"axis"},
-                   xAxis:{type:"category", data:dates}, yAxis:{type:"value", name:"Workouts"},
-                   series:[{name:"Workouts", type:"bar", data:counts, itemStyle:{color:"#5470C6"}}] };
+  const option = {
+    backgroundColor: '#ffffff',
+    title: { 
+      text: "Workout Progress (Last 30 Days)", 
+      left: "center", 
+      textStyle: { color: "#333", fontSize: 16, fontWeight: "bold" },
+      top: 10
+    },
+    tooltip: { trigger: "axis", backgroundColor: "rgba(255,255,255,0.9)", borderColor: "#ddd" },
+    grid: {
+      left: '12%',
+      right: '12%',
+      bottom: '12%',
+      top: '18%',
+      containLabel: true
+    },
+    xAxis: { 
+      type: "category", 
+      data: dates,
+      axisLabel: { color: "#666", fontSize: 11 },
+      axisLine: { lineStyle: { color: "#ddd" } }
+    },
+    yAxis: { 
+      type: "value", 
+      name: "Workouts",
+      axisLabel: { color: "#666", fontSize: 11 },
+      splitLine: { lineStyle: { color: "#f0f0f0" } },
+      axisLine: { lineStyle: { color: "#ddd" } }
+    },
+    series: [{
+      name: "Workouts",
+      type: "bar",
+      data: counts,
+      itemStyle: { color: "#10b981", borderRadius: [6, 6, 0, 0] },
+      label: { show: false }
+    }]
+  };
 
-  try { progressChart.setOption(option); progressChart.resize(); showToast("📈 Progress chart updated","success"); }
-  catch(err){ console.error(err); showToast("❌ Error rendering chart","error"); }
+  try {
+    progressChart.setOption(option);
+    setTimeout(() => {
+      if (progressChart) progressChart.resize();
+    }, 100);
+    showToast("📈 Progress chart loaded", "success");
+  } catch(err) {
+    console.error("Error setting chart option:", err);
+    showToast("❌ Error rendering chart", "error");
+  }
 
   // Load AI summary below the chart
   await loadProgressSummary(30);
-  if (chartDiv && chartDiv.scrollIntoView) chartDiv.scrollIntoView({behavior:"smooth"});
+  
+  // Scroll to chart smoothly
+  if (progressSection && progressSection.scrollIntoView) {
+    setTimeout(() => progressSection.scrollIntoView({behavior:"smooth"}), 300);
+  }
 }
 
-// Load progress summary, show loading state, honor backend's has_data flag
+// Hide the progress section
+function hideProgressSummary() {
+  const progressSection = document.getElementById("progress-section");
+  const chart = document.getElementById("progress-chart");
+  const summary = document.getElementById("progress-summary");
+  
+  if (progressSection) progressSection.style.display = "none";
+  if (chart) chart.style.display = "none";
+  if (summary) summary.style.display = "none";
+  
+  try {
+    if (progressChart && typeof progressChart.dispose === "function") {
+      progressChart.dispose();
+      progressChart = null;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// Load progress summary with proper error handling
 async function loadProgressSummary(days = 30) {
   const summaryLoading = document.getElementById('summaryLoading');
   const summaryContent = document.getElementById('summaryContent');
@@ -1092,9 +1217,12 @@ async function loadProgressSummary(days = 30) {
   if (summaryElement) summaryElement.textContent = '';
 
   try {
-    const response = await fetch(`/workout-stats/progress-summary?days=${days}`);
+    const response = await fetch(`/workout-stats/progress-summary?user_id=default_user&days=${days}`);
     const data = await response.json();
-    if (data.error) throw new Error(data.error);
+    
+    if (!response.ok || data.error) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
 
     if (data.has_data === false) {
       if (summaryLoading) summaryLoading.style.display = 'none';
@@ -1102,31 +1230,39 @@ async function loadProgressSummary(days = 30) {
       if (summaryElement) summaryElement.textContent = data.summary || "No workout data available for analysis. Start logging your workouts to see progress insights!";
       if (workoutCountEl) workoutCountEl.textContent = data.total_workouts ?? 0;
       if (periodEl) periodEl.textContent = days;
-      showToast('ℹ️ No workout data to analyze','error');
+      showToast('ℹ️ No workout data to analyze', 'info');
       return;
     }
 
     if (summaryLoading) summaryLoading.style.display = 'none';
     if (summaryContent) summaryContent.style.display = 'block';
     if (summaryElement) {
-      if (data.summary && typeof marked !== 'undefined') summaryElement.innerHTML = marked.parse(data.summary);
-      else summaryElement.textContent = data.summary || '';
+      if (data.summary && typeof marked !== 'undefined') {
+        summaryElement.innerHTML = marked.parse(data.summary);
+      } else {
+        summaryElement.textContent = data.summary || '';
+      }
     }
     if (workoutCountEl) workoutCountEl.textContent = data.total_workouts ?? 0;
     if (periodEl) periodEl.textContent = days;
     showToast('🤖 Progress analysis updated!', 'success');
+    
   } catch (error) {
     console.error('Error loading progress summary:', error);
     if (summaryLoading) summaryLoading.style.display = 'none';
     if (summaryContent) summaryContent.style.display = 'block';
-    if (summaryElement) summaryElement.textContent = "I'm having trouble analyzing your progress. Make sure you've logged some workouts or try again.";
+    if (summaryElement) {
+      summaryElement.textContent = "I'm having trouble analyzing your progress. Make sure you've logged some workouts or try again.";
+    }
     if (workoutCountEl) workoutCountEl.textContent = 0;
     if (periodEl) periodEl.textContent = days;
-    showToast('❌ Error loading progress analysis','error');
+    showToast('❌ Error loading progress analysis', 'error');
   }
 }
 
-function refreshProgressSummary() { loadProgressSummary(30); }
+function refreshProgressSummary() { 
+  loadProgressSummary(30); 
+}
 
 function checkForNewWorkouts(messageText) {
     if (!messageText) return false;
