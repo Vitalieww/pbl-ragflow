@@ -1520,6 +1520,170 @@ def debug_system_prompt():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/test-workout-detection", methods=["POST"])
+def test_workout_detection():
+    """Test endpoint to see what the AI detects from a message"""
+    try:
+        data = request.get_json()
+        message = data.get('message', '')
+        debug = data.get('debug', False)
+
+        if not message:
+            return jsonify({"error": "No message provided"}), 400
+
+        if debug:
+            # Return detailed debug info
+            return test_workout_detection_debug(message)
+
+        workouts = extract_workout_data_with_ai(message)
+
+        return jsonify({
+            "message": message,
+            "detected_workouts": workouts,
+            "count": len(workouts)
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/test-workout-detection-debug", methods=["POST"])
+def test_workout_detection_debug(message=None):
+    """Debug endpoint with detailed AI response info"""
+    try:
+        if message is None:
+            data = request.get_json()
+            message = data.get('message', '')
+
+        if not message:
+            return jsonify({"error": "No message provided"}), 400
+
+        # Test Ollama connection first
+        try:
+            test_response = requests.get(f"{workout_detector.ollama_base_url}/api/tags", timeout=5)
+            ollama_available = test_response.status_code == 200
+            available_models = []
+            if ollama_available:
+                models_data = test_response.json()
+                available_models = [m.get('name', 'unknown') for m in models_data.get('models', [])]
+        except Exception as e:
+            ollama_available = False
+            available_models = []
+
+        # Try to get raw AI response
+        system_prompt = """You are a workout extraction assistant. Extract workout data and return ONLY a JSON array.
+
+Extract: exercise_name, exercise_type (strength/cardio/other), weight, weight_unit, reps, sets, duration, duration_unit, distance, distance_unit.
+
+Examples:
+"I benched 80kg for 5 reps, 3 sets" → [{"exercise_name": "bench press", "exercise_type": "strength", "weight": 80, "weight_unit": "kg", "reps": 5, "sets": 3}]
+"Ran 5km" → [{"exercise_name": "running", "exercise_type": "cardio", "distance": 5, "distance_unit": "km"}]
+"What should I do?" → []"""
+
+        ai_response_raw = None
+        ai_response_cleaned = None
+        parse_error = None
+
+        try:
+            response = requests.post(
+                f"{workout_detector.ollama_base_url}/api/chat",
+                json={
+                    "model": workout_detector.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Extract workouts from: {message}"}
+                    ],
+                    "stream": False,
+                    "format": "json"
+                },
+                timeout=60
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                ai_response_raw = result.get('message', {}).get('content', '')
+                ai_response_cleaned = workout_detector._clean_json_response(ai_response_raw)
+
+                try:
+                    parsed = json.loads(ai_response_cleaned)
+
+                    # 🔥 Fix: model returns a dict, not a list — wrap it
+                    if isinstance(parsed, dict):
+                        parsed = [parsed]
+
+                    workouts = workout_detector._validate_workouts(parsed)
+                except json.JSONDecodeError as e:
+                    parse_error = str(e)
+                    workouts = []
+            else:
+                ai_response_raw = f"HTTP {response.status_code}: {response.text}"
+                workouts = []
+        except Exception as e:
+            ai_response_raw = f"Request error: {str(e)}"
+            workouts = []
+
+        return jsonify({
+            "message": message,
+            "ollama_config": {
+                "url": workout_detector.ollama_base_url,
+                "model": workout_detector.model,
+                "available": ollama_available,
+                "available_models": available_models
+            },
+            "ai_response": {
+                "raw": ai_response_raw[:1000] if ai_response_raw else None,
+                "cleaned": ai_response_cleaned[:1000] if ai_response_cleaned else None,
+                "parse_error": parse_error
+            },
+            "detected_workouts": workouts,
+            "count": len(workouts)
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/workout-detection/config", methods=["GET", "POST"])
+def workout_detection_config():
+    """Get or update workout detection configuration"""
+    global workout_detector
+
+    if request.method == "GET":
+        return jsonify({
+            "ollama_url": workout_detector.ollama_base_url,
+            "model": workout_detector.model
+        })
+
+    elif request.method == "POST":
+        try:
+            data = request.get_json()
+
+            if 'ollama_url' in data:
+                workout_detector.ollama_base_url = data['ollama_url']
+
+            if 'model' in data:
+                workout_detector.model = data['model']
+
+            return jsonify({
+                "success": True,
+                "message": "Workout detection config updated",
+                "config": {
+                    "ollama_url": workout_detector.ollama_base_url,
+                    "model": workout_detector.model
+                }
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Create workout stats table on startup
     create_workout_stats_table()
