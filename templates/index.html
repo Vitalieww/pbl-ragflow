@@ -59,32 +59,33 @@
       <div class="chat-container">
         <div
           id="progress-chart"
-          style="width: 100%; height: 300px; margin: 20px 0; display: none"
+          style="height: 300px; display: none;"
         ></div>
-<!-- Start vibe code-->
-      <div id="progress-summary" style="display: none; margin: 20px 0;">
+
+        <div id="progress-summary" style="display: none;">
           <div class="summary-section">
-              <h3 style="margin-bottom: 15px; color: #333; display: flex; align-items: center; gap: 10px;">
-                  📊 Progress Analysis
-                  <button class="refresh-summary-btn" onclick="refreshProgressSummary()" 
-                          style="background: #007bff; color: white; border: none; padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;">
-                      🔄 Refresh
-                  </button>
-              </h3>
-              <div class="summary-card">
-                  <div class="loading-spinner" id="summaryLoading">
-                      <p>🤖 AI is analyzing your workout progress...</p>
-                  </div>
-                  <div id="summaryContent" style="display: none;">
-                      <p id="summaryText" style="margin: 0; line-height: 1.6; color: #333;"></p>
-                      <div class="summary-meta" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; color: #666; font-size: 12px;">
-                          <span>Based on <strong id="workoutCount">0</strong> workouts in the last <strong id="periodDays">30</strong> days</span>
-                      </div>
-                  </div>
+            <h3 style="margin-bottom: 15px; color: #333; display: flex; align-items: center; gap: 10px; position: relative;">
+              📊 Progress Analysis
+              <button class="refresh-summary-btn" onclick="refreshProgressSummary()" style="background: #007bff; color: white; border: none; padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                🔄 Refresh
+              </button>
+              <button class="close-summary-btn" onclick="hideProgressSummary()" title="Close summary">×</button>
+            </h3>
+
+            <div class="summary-card">
+              <div class="loading-spinner" id="summaryLoading">
+                <p>🤖 AI is analyzing your workout progress...</p>
               </div>
+              <div id="summaryContent" style="display: none;">
+                <p id="summaryText" style="margin: 0; line-height: 1.6; color: #333;"></p>
+                <div class="summary-meta" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; color: #666; font-size: 12px;">
+                  <span>Based on <strong id="workoutCount">0</strong> workouts in the last <strong id="periodDays">30</strong> days</span>
+                </div>
+              </div>
+            </div>
           </div>
-      </div>
- <!-- End vibe code-->
+        </div>
+
         <div class="chat-header">
           <div class="chat-header-left">
             <h2 id="chat-title">💪 FitCoach AI</h2>

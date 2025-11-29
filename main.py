@@ -526,56 +526,87 @@ def ask():
 
 @app.route("/workout-stats", methods=["GET"])
 def get_workout_stats():
-    """Get workout statistics for a user"""
+    """Get workout statistics for a user (DB primary, JSON-file fallback)"""
     user_id = request.args.get("user_id", "default_user")
     days = request.args.get("days", 30, type=int)
     exercise_type = request.args.get("type")  # strength, cardio, other
-    
+
     try:
         connection = get_mysql_connection()
-        if not connection:
-            return jsonify({"error": "Database connection failed"}), 500
-        
-        cursor = connection.cursor(dictionary=True)
-        
-        # Build query based on filters
-        query = """
-        SELECT * FROM workout_stats 
-        WHERE user_id = %s 
-        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-        """
-        params = [user_id, days]
-        
-        if exercise_type:
-            query += " AND exercise_type = %s"
-            params.append(exercise_type)
-        
-        query += " ORDER BY workout_date DESC, create_time DESC"
-        
-        cursor.execute(query, params)
-        workouts = cursor.fetchall()
-        
-        # Convert to JSON-serializable format
-        for workout in workouts:
-            if workout.get('weight'):
-                workout['weight'] = float(workout['weight'])
-            if workout.get('distance'):
-                workout['distance'] = float(workout['distance'])
-            if workout.get('workout_date'):
-                workout['workout_date'] = workout['workout_date'].strftime('%Y-%m-%d')
-            if workout.get('create_date'):
-                workout['create_date'] = workout['create_date'].strftime('%Y-%m-%d %H:%M:%S')
-        
-        cursor.close()
-        connection.close()
-        
+        workouts = []
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+
+            # Build query based on filters
+            query = """
+            SELECT * FROM workout_stats 
+            WHERE user_id = %s 
+            AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            """
+            params = [user_id, days]
+
+            if exercise_type:
+                query += " AND exercise_type = %s"
+                params.append(exercise_type)
+
+            query += " ORDER BY workout_date DESC, create_time DESC"
+
+            cursor.execute(query, params)
+            workouts = cursor.fetchall()
+
+            # Convert to JSON-serializable format
+            for workout in workouts:
+                if workout.get('weight'):
+                    workout['weight'] = float(workout['weight'])
+                if workout.get('distance'):
+                    workout['distance'] = float(workout['distance'])
+                if workout.get('workout_date'):
+                    workout['workout_date'] = workout['workout_date'].strftime('%Y-%m-%d')
+                if workout.get('create_date'):
+                    workout['create_date'] = workout['create_date'].strftime('%Y-%m-%d %H:%M:%S')
+
+            cursor.close()
+            connection.close()
+
+        # If DB returned no rows, try JSON-file fallback
+        if not workouts:
+            json_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+            if os.path.exists(json_path):
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    file_workouts = data.get('workouts', [])
+                    # Optionally filter by days param if workouts include dates
+                    if days and file_workouts:
+                        cutoff = (datetime.now().date() - timedelta(days=days)).isoformat()
+                        file_workouts = [w for w in file_workouts if w.get('workout_date') and w['workout_date'] >= cutoff]
+                    return jsonify({
+                        "total": len(file_workouts),
+                        "workouts": file_workouts
+                    })
+                except Exception as e:
+                    print(f"Error reading fallback JSON {json_path}: {e}")
+
         return jsonify({
             "total": len(workouts),
             "workouts": workouts
         })
-        
+
     except Exception as e:
         print(f"Error getting workout stats: {e}")
+        # As a last resort attempt file fallback even on exception
+        json_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                file_workouts = data.get('workouts', [])
+                return jsonify({
+                    "total": len(file_workouts),
+                    "workouts": file_workouts
+                })
+            except Exception as ex:
+                print(f"Error reading fallback JSON after exception: {ex}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -1363,85 +1394,138 @@ def debug_system_prompt():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/workout-stats/progress-summary", methods=["GET"])
 def get_progress_summary():
-    """Generate AI-powered progress summary based on workout statistics"""
+    """Generate AI-powered progress summary based on workout statistics (DB primary, JSON-file fallback)"""
     user_id = request.args.get("user_id", "default_user")
     days = request.args.get("days", 30, type=int)
-    
+
     try:
         # Get workout data
         connection = get_mysql_connection()
-        if not connection:
-            return jsonify({"error": "Database connection failed"}), 500
-        
-        cursor = connection.cursor(dictionary=True)
-        
-        # Get comprehensive workout data for the period
-        query = """
-        SELECT 
-            exercise_type,
-            exercise_name,
-            weight,
-            weight_unit,
-            reps,
-            sets,
-            duration,
-            distance,
-            workout_date,
-            create_time
-        FROM workout_stats 
-        WHERE user_id = %s 
-        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-        ORDER BY workout_date ASC
-        """
-        
-        cursor.execute(query, (user_id, days))
-        workouts = cursor.fetchall()
-        
-        # Get previous period data for comparison
-        previous_query = """
-        SELECT 
-            exercise_type,
-            COUNT(*) as workout_count,
-            AVG(weight) as avg_weight,
-            AVG(reps) as avg_reps,
-            SUM(distance) as total_distance,
-            SUM(duration) as total_duration
-        FROM workout_stats 
-        WHERE user_id = %s 
-        AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-        AND workout_date < DATE_SUB(CURDATE(), INTERVAL %s DAY)
-        GROUP BY exercise_type
-        """
-        
-        cursor.execute(previous_query, (user_id, days*2, days))
-        previous_data = cursor.fetchall()
-        
-        cursor.close()
-        connection.close()
-        
+        workouts = []
+
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+
+            # Get comprehensive workout data for the period
+            query = """
+            SELECT 
+                exercise_type,
+                exercise_name,
+                weight,
+                weight_unit,
+                reps,
+                sets,
+                duration,
+                distance,
+                workout_date,
+                create_time
+            FROM workout_stats 
+            WHERE user_id = %s 
+            AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            ORDER BY workout_date ASC
+            """
+
+            cursor.execute(query, (user_id, days))
+            workouts = cursor.fetchall()
+
+            # Get previous period data for comparison
+            previous_query = """
+            SELECT 
+                exercise_type,
+                COUNT(*) as workout_count,
+                AVG(weight) as avg_weight,
+                AVG(reps) as avg_reps,
+                SUM(distance) as total_distance,
+                SUM(duration) as total_duration
+            FROM workout_stats 
+            WHERE user_id = %s 
+            AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            AND workout_date < DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            GROUP BY exercise_type
+            """
+
+            cursor.execute(previous_query, (user_id, days*2, days))
+            previous_data = cursor.fetchall()
+
+            cursor.close()
+            connection.close()
+        else:
+            previous_data = []
+
+        # If no workouts from DB, try JSON-file fallback
         if not workouts:
+            json_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+            if os.path.exists(json_path):
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    file_workouts = data.get('workouts', [])
+                    # Filter by days
+                    cutoff_date = (datetime.now().date() - timedelta(days=days)).isoformat()
+                    filtered = [w for w in file_workouts if w.get('workout_date') and w['workout_date'] >= cutoff_date]
+                    if not filtered:
+                        return jsonify({
+                            "summary": "No workout data available for analysis. Start logging your workouts to see progress insights!",
+                            "has_data": False
+                        })
+                    # Prepare context using filtered file data
+                    # For previous_data comparison we keep it empty (simple fallback)
+                    workout_context = prepare_workout_context(filtered, [], days)
+                    summary = generate_progress_summary(workout_context, user_id)
+                    return jsonify({
+                        "summary": summary,
+                        "has_data": True,
+                        "period_days": days,
+                        "total_workouts": len(filtered)
+                    })
+                except Exception as e:
+                    print(f"Error reading fallback JSON {json_path}: {e}")
+
+            # no data available
             return jsonify({
                 "summary": "No workout data available for analysis. Start logging your workouts to see progress insights!",
                 "has_data": False
             })
-        
-        # Prepare data for AI analysis
-        workout_context = prepare_workout_context(workouts, previous_data, days)
-        
+
+        # Prepare data for AI analysis using DB results
+        workout_context = prepare_workout_context(workouts, previous_data if 'previous_data' in locals() else [], days)
+
         # Generate AI summary
         summary = generate_progress_summary(workout_context, user_id)
-        
+
         return jsonify({
             "summary": summary,
             "has_data": True,
             "period_days": days,
             "total_workouts": len(workouts)
         })
-        
+
     except Exception as e:
         print(f"Error generating progress summary: {e}")
+        # Try fallback JSON
+        json_path = os.path.join(STATS_DIR, f"{user_id}_workout_stats.json")
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                file_workouts = data.get('workouts', [])
+                cutoff_date = (datetime.now().date() - timedelta(days=days)).isoformat()
+                filtered = [w for w in file_workouts if w.get('workout_date') and w['workout_date'] >= cutoff_date]
+                if filtered:
+                    workout_context = prepare_workout_context(filtered, [], days)
+                    summary = generate_progress_summary(workout_context, user_id)
+                    return jsonify({
+                        "summary": summary,
+                        "has_data": True,
+                        "period_days": days,
+                        "total_workouts": len(filtered)
+                    })
+            except Exception as ex:
+                print(f"Error reading fallback JSON in exception handler: {ex}")
+
         return jsonify({"error": str(e)}), 500
 
 
@@ -1554,13 +1638,48 @@ def calculate_trends(current_stats, previous_data):
     return trends
 
 
+def ai_summary_with_timeout(prompt, timeout_seconds=4, max_tokens=200, temperature=0.2):
+    """
+    Call the AI client in a background thread and return its text if it finishes
+    within timeout_seconds. Returns (text, error). If timed out or errored, text is None.
+    """
+    result = {"text": None, "error": None}
+
+    def target():
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a motivational fitness coach. Provide concise, encouraging progress summaries based on workout data. Highlight achievements and give one practical suggestion."},
+                    {"role": "user", "content": prompt}
+                ],
+                stream=False,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            if completion and hasattr(completion, "choices") and len(completion.choices) > 0:
+                msg = getattr(completion.choices[0], "message", None)
+                if msg:
+                    result["text"] = getattr(msg, "content", None)
+                else:
+                    try:
+                        result["text"] = completion.choices[0].text
+                    except Exception:
+                        result["text"] = None
+        except Exception as e:
+            result["error"] = str(e)
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        return None, "timeout"
+    return result["text"], result["error"]
+
+
 def generate_progress_summary(workout_context, user_id):
-    """Generate AI-powered progress summary"""
-    
-    # Prepare prompt for AI
-    prompt = f"""
-    Analyze this workout data and provide a concise, motivational progress summary:
-    
+    """Generate AI-powered progress summary with timeout and quick fallback"""
+    prompt = f"""Analyze this workout data and provide a concise, motivational progress summary:
     Workout Period: Last {workout_context['period_days']} days
     Total Workouts: {workout_context['total_workouts']}
     
@@ -1587,26 +1706,19 @@ def generate_progress_summary(workout_context, user_id):
     4. Motivational encouragement
     5. One specific suggestion for continued progress
     
-    Keep it under 200 words, positive and actionable.
+    Keep it under 150 words, positive and actionable.
     """
-    
     try:
-        # Use your existing AI client to generate the summary
-        completion = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You are a motivational fitness coach. Provide concise, encouraging progress summaries based on workout data. Highlight achievements and give one practical suggestion."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=False,
-            max_tokens=500
-        )
-        
-        return completion.choices[0].message.content
-        
+        summary_text, error = ai_summary_with_timeout(prompt, timeout_seconds=4, max_tokens=180, temperature=0.15)
+        if summary_text:
+            return summary_text
+        if error:
+            print(f"AI summary error/timeout: {error}")
+        else:
+            print("AI summary returned no text within timeout; using fallback.")
+        return generate_fallback_summary(workout_context)
     except Exception as e:
-        print(f"Error generating AI summary: {e}")
-        # Fallback summary
+        print(f"Unexpected error generating progress summary: {e}")
         return generate_fallback_summary(workout_context)
 
 
