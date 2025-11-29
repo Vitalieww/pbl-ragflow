@@ -8,6 +8,7 @@ let userProfile = {};
 document.addEventListener("DOMContentLoaded", () => {
   loadSessions();
   loadUserData();
+  loadProfile();  // ← ADD THIS
   loadStats();
   loadWorkoutDataFromJson(); // NEW: Load JSON on startup
   initializeVoiceRecognition();
