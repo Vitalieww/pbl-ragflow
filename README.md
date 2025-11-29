@@ -17,7 +17,7 @@ These are generic instructions — replace paths/commands with the actual projec
    git clone https://github.com/Vitalieww/pbl-ragflow.git
    cd pbl-ragflow
    ```
-2. Install the requirements
+2. Install the requirements using the tool from /tool , also have ragflow and ollama...
 3. Set .env variables 
 4. Open the app in your browser at the configured port 
 
