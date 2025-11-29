@@ -4,11 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 - To add right side eChart buttons for exercise categorization
-##[1.1.0.2] - 2025-11-29
+## [1.1.0.2] - 2025-11-29
 - Under the statistics chart, the AI will create a small resume of the progress made.
 - Centered some UI elements
 - Gave up on efficiency for speed
-##[1.1.0.1] - 2025-11-29
+## [1.1.0.1] - 2025-11-29
 - Added a py program to install required libraries
 
 ## [1.1.0.0] - 2025-11-29
