@@ -223,7 +223,143 @@ class AIWorkoutDetector:
             traceback.print_exc()
             return []
 
+    def _clean_json_response(self, response: str) -> str:
+        """Clean up AI response to extract valid JSON"""
+        if response.strip().startswith("{"):
+            return f"[{response}]"
+        response = response.strip()
 
+        # Remove markdown code blocks
+        if '```' in response:
+            parts = response.split('```')
+            for part in parts:
+                part = part.strip()
+                if part.startswith('json'):
+                    part = part[4:].strip()
+                if part.startswith('[') or part.startswith('{'):
+                    response = part
+                    break
+
+        # Find the JSON array in the response
+        start_idx = response.find('[')
+        end_idx = response.rfind(']')
+
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            response = response[start_idx:end_idx + 1]
+
+        return response
+
+    def _validate_workouts(self, workouts: list) -> List[Dict]:
+        """Validate and clean workout data"""
+
+        validated_workouts = []
+
+        for workout in workouts:
+            if not isinstance(workout, dict):
+                continue
+
+            if not workout.get('exercise_name'):
+                continue
+
+            validated = {
+                'exercise_name': str(workout.get('exercise_name', '')).lower().strip(),
+                'exercise_type': workout.get('exercise_type', 'other'),
+                'weight': None,
+                'weight_unit': None,
+                'reps': None,
+                'sets': None,
+                'duration': None,
+                'duration_unit': None,
+                'distance': None,
+                'distance_unit': None,
+                'calories': None,
+                'notes': workout.get('notes')
+            }
+
+            # Safely convert numeric fields
+            if workout.get('weight'):
+                try:
+                    validated['weight'] = float(workout['weight'])
+                    validated['weight_unit'] = workout.get('weight_unit', 'kg')
+                except (ValueError, TypeError):
+                    pass
+
+            if workout.get('reps'):
+                try:
+                    validated['reps'] = int(workout['reps'])
+                except (ValueError, TypeError):
+                    pass
+
+            if workout.get('sets'):
+                try:
+                    validated['sets'] = int(workout['sets'])
+                except (ValueError, TypeError):
+                    pass
+
+            if workout.get('duration'):
+                try:
+                    validated['duration'] = int(workout['duration'])
+                    validated['duration_unit'] = workout.get('duration_unit', 'minutes')
+                except (ValueError, TypeError):
+                    pass
+
+            if workout.get('distance'):
+                try:
+                    validated['distance'] = float(workout['distance'])
+                    validated['distance_unit'] = workout.get('distance_unit', 'km')
+                except (ValueError, TypeError):
+                    pass
+
+            if workout.get('calories'):
+                try:
+                    validated['calories'] = int(workout['calories'])
+                except (ValueError, TypeError):
+                    pass
+
+            validated_workouts.append(validated)
+
+        return validated_workouts
+
+    def _detect_with_generate(self, system_prompt: str, user_prompt: str) -> List[Dict]:
+        """Fallback method using generate endpoint"""
+        try:
+            full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nJSON array:"
+
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": full_prompt,
+                    "stream": False,
+                    "format": "json",
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 1000
+                    }
+                },
+                timeout=20
+            )
+
+            if response.status_code != 200:
+                print(f"⚠️ Generate endpoint also failed: {response.status_code}")
+                return []
+
+            result = response.json()
+            ai_response = result.get('response', '[]').strip()
+            ai_response = self._clean_json_response(ai_response)
+
+            workouts = json.loads(ai_response)
+            return self._validate_workouts(workouts) if isinstance(workouts, list) else []
+
+        except Exception as e:
+            print(f"⚠️ Generate fallback error: {e}")
+            return []
+
+# Initialize the detector globally
+workout_detector = AIWorkoutDetector(
+    ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+    model=os.getenv("WORKOUT_DETECTION_MODEL", MODEL)
+)
 
 def save_workout_stats(session_id, user_id, workouts, workout_date=None):
     """Save workout statistics to MySQL and JSON file"""
