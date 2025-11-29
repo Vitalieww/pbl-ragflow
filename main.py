@@ -478,9 +478,19 @@ def export_workout_stats_to_json(user_id="default_user"):
         print(f"Error exporting workout stats: {e}")
         return None
 
+def extract_workout_data_with_ai(message: str, conversation_history: List[Dict] = None) -> List[Dict]:
+    """
+    Extract workout data using AI instead of regex.
+    Falls back to empty list if AI detection fails.
+    """
+    try:
+        return workout_detector.detect_workouts(message, conversation_history)
+    except Exception as e:
+        print(f"Error in AI workout detection: {e}")
+        return []
 
 def save_to_mysql(session_id: str, question: str, answer: str):
-    """Save Q&A into MySQL conversation table and extract workout stats"""
+    """Save Q&A into MySQL conversation table and extract workout stats with AI"""
     try:
         connection = get_mysql_connection()
         if not connection:
@@ -489,7 +499,7 @@ def save_to_mysql(session_id: str, question: str, answer: str):
 
         cursor = connection.cursor()
 
-        # Fetch existing conversation
+        # Fetch existing conversation for context
         cursor.execute("SELECT message FROM conversation WHERE dialog_id = %s", (session_id,))
         row = cursor.fetchone()
         messages = []
@@ -507,7 +517,6 @@ def save_to_mysql(session_id: str, question: str, answer: str):
         now_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if row:
-            # Update existing
             cursor.execute(
                 """
                 UPDATE conversation
@@ -517,7 +526,6 @@ def save_to_mysql(session_id: str, question: str, answer: str):
                 (json.dumps(messages), now_ms, now_dt, session_id)
             )
         else:
-            # Insert new row
             cursor.execute(
                 """
                 INSERT INTO conversation 
@@ -541,11 +549,14 @@ def save_to_mysql(session_id: str, question: str, answer: str):
         connection.close()
         print(f"💾 Saved conversation to MySQL for session {session_id}")
 
-        # Extract and save workout data from the user's question
-        workouts = extract_workout_data(question)
+        # Use AI to extract workout data with conversation context
+        workouts = extract_workout_data_with_ai(question, messages[-6:-1])  # Pass recent context
+
         if workouts:
-            print(f"🏋️ Found {len(workouts)} workout(s) in message")
+            print(f"🏋️ AI detected {len(workouts)} workout(s): {[w['exercise_name'] for w in workouts]}")
             save_workout_stats(session_id, "default_user", workouts)
+        else:
+            print(f"ℹ️ No workouts detected in message")
 
     except Exception as e:
         print(f"MySQL save error: {e}")
@@ -668,7 +679,6 @@ def ask():
     return Response(generate_response(question, session_id), mimetype="text/event-stream")
 
 
-# NEW ENDPOINTS FOR WORKOUT STATS
 
 @app.route("/workout-stats", methods=["GET"])
 def get_workout_stats():
