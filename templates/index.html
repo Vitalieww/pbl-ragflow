@@ -80,27 +80,126 @@
         </div>
 
         <!-- Progress Chart and Summary (ABOVE quick-actions) -->
-        <div id="progress-section" style="display: none;">
-          <div id="progress-chart" style="height: 350px; width: 100%;"></div>
+        <div id="progress-section" style="display: none">
+          <div class="progress-container">
+            <div id="progress-chart" style="height: 350px; flex: 1"></div>
 
-          <div id="progress-summary" style="display: none;">
+            <!-- Exercise Buttons on the Right -->
+            <div class="exercise-buttons-panel">
+              <h4 style="margin-bottom: 12px; color: #333; font-size: 14px">
+                Quick Exercises
+              </h4>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Chest: Bench press - 3 sets of 8 reps')"
+              >
+                🏋️ Bench Press
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Back: Deadlift - 3 sets of 5 reps')"
+              >
+                🏋️ Deadlift
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Legs: Squat - 4 sets of 8 reps')"
+              >
+                🦵 Squats
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Cardio: Running - 30 minutes at moderate pace')"
+              >
+                🏃 Running
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Arms: Bicep curls - 3 sets of 10 reps')"
+              >
+                💪 Bicep Curls
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Shoulders: Shoulder press - 3 sets of 8 reps')"
+              >
+                🦾 Shoulder Press
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Core: Plank - 3 sets of 1 minute')"
+              >
+                🤸 Planks
+              </button>
+              <button
+                class="exercise-btn"
+                onclick="usePrompt('Flexibility: Yoga session - 45 minutes')"
+              >
+                🧘 Yoga
+              </button>
+            </div>
+          </div>
+
+          <div id="progress-summary" style="display: none">
             <div class="summary-section">
-              <h3 style="margin-bottom: 15px; color: #333; display: flex; align-items: center; gap: 10px; position: relative;">
+              <h3
+                style="
+                  margin-bottom: 15px;
+                  color: #333;
+                  display: flex;
+                  align-items: center;
+                  gap: 10px;
+                  position: relative;
+                "
+              >
                 📊 Progress Analysis
-                <button class="refresh-summary-btn" onclick="refreshProgressSummary()" style="background: #007bff; color: white; border: none; padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                <button
+                  class="refresh-summary-btn"
+                  onclick="refreshProgressSummary()"
+                  style="
+                    background: #007bff;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    cursor: pointer;
+                  "
+                >
                   🔄 Refresh
                 </button>
-                <button class="close-summary-btn" onclick="hideProgressSummary()" title="Close summary">×</button>
+                <button
+                  class="close-summary-btn"
+                  onclick="hideProgressSummary()"
+                  title="Close summary"
+                >
+                  ×
+                </button>
               </h3>
 
               <div class="summary-card">
                 <div class="loading-spinner" id="summaryLoading">
                   <p>🤖 AI is analyzing your workout progress...</p>
                 </div>
-                <div id="summaryContent" style="display: none;">
-                  <p id="summaryText" style="margin: 0; line-height: 1.6; color: #333;"></p>
-                  <div class="summary-meta" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; color: #666; font-size: 12px;">
-                    <span>Based on <strong id="workoutCount">0</strong> workouts in the last <strong id="periodDays">30</strong> days</span>
+                <div id="summaryContent" style="display: none">
+                  <p
+                    id="summaryText"
+                    style="margin: 0; line-height: 1.6; color: #333"
+                  ></p>
+                  <div
+                    class="summary-meta"
+                    style="
+                      margin-top: 15px;
+                      padding-top: 10px;
+                      border-top: 1px solid #eee;
+                      color: #666;
+                      font-size: 12px;
+                    "
+                  >
+                    <span
+                      >Based on <strong id="workoutCount">0</strong> workouts in
+                      the last <strong id="periodDays">30</strong> days</span
+                    >
                   </div>
                 </div>
               </div>
@@ -204,26 +303,68 @@
           </div>
 
           <!-- Progress Chart and Summary (inside chat-box, scrolls with messages) -->
-          <div id="progress-chart" style="height: 300px; display: none;"></div>
+          <div id="progress-chart" style="height: 300px; display: none"></div>
 
-          <div id="progress-summary" style="display: none;">
+          <div id="progress-summary" style="display: none">
             <div class="summary-section">
-              <h3 style="margin-bottom: 15px; color: #333; display: flex; align-items: center; gap: 10px; position: relative;">
+              <h3
+                style="
+                  margin-bottom: 15px;
+                  color: #333;
+                  display: flex;
+                  align-items: center;
+                  gap: 10px;
+                  position: relative;
+                "
+              >
                 📊 Progress Analysis
-                <button class="refresh-summary-btn" onclick="refreshProgressSummary()" style="background: #007bff; color: white; border: none; padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                <button
+                  class="refresh-summary-btn"
+                  onclick="refreshProgressSummary()"
+                  style="
+                    background: #007bff;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    cursor: pointer;
+                  "
+                >
                   🔄 Refresh
                 </button>
-                <button class="close-summary-btn" onclick="hideProgressSummary()" title="Close summary">×</button>
+                <button
+                  class="close-summary-btn"
+                  onclick="hideProgressSummary()"
+                  title="Close summary"
+                >
+                  ×
+                </button>
               </h3>
 
               <div class="summary-card">
                 <div class="loading-spinner" id="summaryLoading">
                   <p>🤖 AI is analyzing your workout progress...</p>
                 </div>
-                <div id="summaryContent" style="display: none;">
-                  <p id="summaryText" style="margin: 0; line-height: 1.6; color: #333;"></p>
-                  <div class="summary-meta" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; color: #666; font-size: 12px;">
-                    <span>Based on <strong id="workoutCount">0</strong> workouts in the last <strong id="periodDays">30</strong> days</span>
+                <div id="summaryContent" style="display: none">
+                  <p
+                    id="summaryText"
+                    style="margin: 0; line-height: 1.6; color: #333"
+                  ></p>
+                  <div
+                    class="summary-meta"
+                    style="
+                      margin-top: 15px;
+                      padding-top: 10px;
+                      border-top: 1px solid #eee;
+                      color: #666;
+                      font-size: 12px;
+                    "
+                  >
+                    <span
+                      >Based on <strong id="workoutCount">0</strong> workouts in
+                      the last <strong id="periodDays">30</strong> days</span
+                    >
                   </div>
                 </div>
               </div>

@@ -1499,7 +1499,7 @@ if __name__ == "__main__":
     print("🚀 Starting FitCoach AI server...")
     try:
         create_workout_stats_table()
-        app.run(debug=True, threaded=True, host='0.0.0.0', port=5000)
+        app.run(debug=True, threaded=True, host='0.0.0.0', port=5001)
     except Exception as e:
         print(f"❌ Fatal error: {e}")
         import traceback
