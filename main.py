@@ -104,66 +104,111 @@ def create_workout_stats_table():
 
 
 class AIWorkoutDetector:
-    """AI-powered workout detection using Ollama or local LLM"""
+    """AI-powered workout detection using Ollama or local LLM with retry logic"""
 
     def __init__(self, ollama_base_url: str = "http://localhost:11434", model: str = None):
         self.ollama_base_url = ollama_base_url
         self.model = model or os.getenv("MODEL", "llama2")
+        self.max_retries = 2
+        self.timeout = 15  # Reduced timeout for faster failure detection
+        self._session = None
+    
+    @property
+    def session(self):
+        """Lazy-loaded persistent session for connection pooling"""
+        if self._session is None:
+            self._session = requests.Session()
+            # Configure connection pooling for better performance
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=5,
+                pool_maxsize=10,
+                max_retries=0  # We handle retries manually
+            )
+            self._session.mount('http://', adapter)
+            self._session.mount('https://', adapter)
+        return self._session
 
     def detect_workouts(self, message: str, conversation_history: List[Dict] = None) -> List[Dict]:
-        """Use AI to detect workout information from natural language."""
+        """Use AI to detect workout information from natural language with retries."""
+        # Quick check - skip detection for very short messages or obvious non-workout messages
+        if len(message.strip()) < 10:
+            return []
+        
+        # Build context efficiently
         context = ""
         if conversation_history:
-            recent_messages = conversation_history[-3:]
-            context = "Recent conversation:\n"
-            for msg in recent_messages:
-                role = msg.get('role', 'user')
-                content = msg.get('content', '')[:150]
-                context += f"{role}: {content}\n"
-            context += "\n"
+            recent_messages = conversation_history[-2:]  # Reduced from 3 for speed
+            context = "Context:\n" + "\n".join(
+                f"{m.get('role', 'user')}: {m.get('content', '')[:100]}"
+                for m in recent_messages
+            ) + "\n\n"
 
-        system_prompt = """Extract workouts from the user message. Return ONLY a JSON array.
-For each workout extract: exercise_name, exercise_type ("strength" or "cardio"), weight, weight_unit, reps, sets, duration, duration_unit, distance, distance_unit, calories, notes.
-RULES: Do NOT infer values. Only include if clearly stated. Return a JSON ARRAY, even for one workout. If no workout found, return []. No extra text."""
+        system_prompt = """Extract workouts from user message. Return ONLY valid JSON array.
+Extract: exercise_name, exercise_type ("strength"/"cardio"), weight, weight_unit, reps, sets, duration, duration_unit, distance, distance_unit, calories, notes.
+Rules: Only include explicitly stated values. Return [] if no workout found."""
 
-        user_prompt = f"{context}Extract workouts from:\n{message}"
+        user_prompt = f"{context}Message: {message}"
 
-        try:
-            response = requests.post(
-                f"{self.ollama_base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.1, "num_predict": 1000}
-                },
-                timeout=60
-            )
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.post(
+                    f"{self.ollama_base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "stream": False,
+                        "format": "json",
+                        "options": {
+                            "temperature": 0.1,
+                            "num_predict": 500,  # Reduced for speed
+                            "num_ctx": 2048      # Smaller context for speed
+                        }
+                    },
+                    timeout=self.timeout
+                )
 
-            if response.status_code != 200:
-                print(f"⚠️ Ollama error: {response.status_code}")
+                if response.status_code != 200:
+                    if attempt < self.max_retries:
+                        time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                        continue
+                    print(f"⚠️ Ollama error: {response.status_code}")
+                    return []
+
+                result = response.json()
+                ai_response = result.get('message', {}).get('content', '[]').strip()
+                ai_response = self._clean_json_response(ai_response)
+
+                workouts = json.loads(ai_response)
+                if not isinstance(workouts, list):
+                    workouts = [workouts] if isinstance(workouts, dict) else []
+
+                validated = self._validate_workouts(workouts)
+                if validated:
+                    print(f"💪 AI detected {len(validated)} workout(s)")
+                return validated
+
+            except requests.exceptions.Timeout:
+                if attempt < self.max_retries:
+                    print(f"⚠️ Workout detection timeout, retry {attempt + 1}/{self.max_retries}")
+                    continue
+                print("⚠️ Workout detection timed out after retries")
                 return []
-
-            result = response.json()
-            ai_response = result.get('message', {}).get('content', '[]').strip()
-            ai_response = self._clean_json_response(ai_response)
-
-            workouts = json.loads(ai_response)
-            if not isinstance(workouts, list):
-                workouts = [workouts] if isinstance(workouts, dict) else []
-
-            validated = self._validate_workouts(workouts)
-            if validated:
-                print(f"💪 AI detected {len(validated)} workout(s)")
-            return validated
-
-        except Exception as e:
-            print(f"⚠️ Workout detection error: {e}")
-            return []
+            except requests.exceptions.ConnectionError:
+                print("⚠️ Cannot connect to Ollama for workout detection")
+                return []  # Don't retry connection errors
+            except json.JSONDecodeError as e:
+                if attempt < self.max_retries:
+                    continue
+                print(f"⚠️ JSON parse error in workout detection: {e}")
+                return []
+            except Exception as e:
+                print(f"⚠️ Workout detection error: {e}")
+                return []
+        
+        return []
 
     def _clean_json_response(self, response: str) -> str:
         """Clean up AI response to extract valid JSON"""
@@ -424,27 +469,32 @@ def get_or_create_default_session():
 def save_conversation_to_ragflow(session_id: str, question: str, answer: str):
     """Save the complete Q&A to RAGFlow using REST API"""
     try:
-        headers = {'Authorization': f'Bearer {API_KEY}', 'Content-Type': 'application/json'}
+        headers = {
+            'Authorization': f'Bearer {API_KEY}',
+            'Content-Type': 'application/json'
+        }
         url = f"{BASE_URL}/api/v1/chats/{CHAT_ID}/completions"
-        payload = {"question": question, "session_id": session_id, "stream": False}
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        payload = {
+            "question": question,
+            "session_id": session_id,
+            "stream": False
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         if response.status_code == 200:
             print(f"✓ Conversation saved to session {session_id}")
         else:
             print(f"✗ Error saving to RAGFlow: {response.status_code}")
+    except requests.exceptions.Timeout:
+        print(f"✗ RAGFlow save timed out for session {session_id}")
     except Exception as e:
         print(f"✗ Error saving to RAGFlow: {e}")
 
 
 def generate_response(question: str, session_id: str,
                       system_prompt: str = "You are a helpful fitness and health assistant."):
-    """Generator that yields assistant text chunks with proper SSE format"""
+    """Generator that yields assistant text chunks"""
     full_response = ""
     try:
-        if not client:
-            yield f"data: {json.dumps({'error': 'AI client not initialized'})}\n\n"
-            return
-
         completion = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -452,85 +502,165 @@ def generate_response(question: str, session_id: str,
                 {"role": "user", "content": question}
             ],
             stream=True,
-            extra_body={"reference": True, "session_id": session_id}
+            extra_body={
+                "reference": True,
+                "session_id": session_id
+            }
         )
-        
         for chunk in completion:
-            try:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    content = delta.content
-                    full_response += content
-                    yield f"data: {json.dumps({'content': content})}\n\n"
-            except Exception as e:
-                print(f"Error processing chunk: {e}")
-                continue
+            delta = chunk.choices[0].delta
+            if hasattr(delta, "content") and delta.content:
+                content = delta.content
+                full_response += content
+                yield f"data: {json.dumps({'content': content})}\n\n"
 
         if full_response:
-            # Save in background threads
-            try:
-                thread = threading.Thread(
-                    target=save_to_mysql,
-                    args=(session_id, question, full_response),
-                    daemon=True
-                )
-                thread.start()
-            except Exception as e:
-                print(f"Error starting save thread: {e}")
+            # Save to MySQL (which also extracts workout stats)
+            thread = threading.Thread(
+                target=save_to_mysql,
+                args=(session_id, question, full_response)
+            )
+            thread.daemon = True
+            thread.start()
 
-            try:
-                thread2 = threading.Thread(
-                    target=save_conversation_to_ragflow,
-                    args=(session_id, question, full_response),
-                    daemon=True
-                )
-                thread2.start()
-            except Exception as e:
-                print(f"Error starting RAGFlow thread: {e}")
+            # (Optional) Save to RAGFlow too
+            thread2 = threading.Thread(
+                target=save_conversation_to_ragflow,
+                args=(session_id, question, full_response)
+            )
+            thread2.daemon = True
+            thread2.start()
 
         yield f"data: {json.dumps({'done': True})}\n\n"
-        
     except Exception as e:
         print(f"Error in generate_response: {e}")
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
+def generate_response_direct(question: str, session_id: str = None):
+    """Direct Ollama response - for simple questions that don't need knowledge base"""
+    full_response = ""
+    
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    model = os.getenv("MODEL", "llama3.2:latest")
+    
+    system_prompt = """You are FitCoach, a helpful and friendly fitness assistant. 
+You help users with workout plans, nutrition advice, and fitness goals.
+Be concise, encouraging, and practical."""
+    
+    try:
+        response = requests.post(
+            f"{ollama_url}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": question}
+                ],
+                "stream": True
+            },
+            stream=True,
+            timeout=120
+        )
+        
+        if response.status_code != 200:
+            yield f"data: {json.dumps({'error': f'Ollama error: {response.status_code}'})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            return
+        
+        for line in response.iter_lines():
+            if line:
+                try:
+                    data = json.loads(line)
+                    if "message" in data and "content" in data["message"]:
+                        content = data["message"]["content"]
+                        full_response += content
+                        yield f"data: {json.dumps({'content': content})}\n\n"
+                    if data.get("done"):
+                        break
+                except json.JSONDecodeError:
+                    continue
+        
+        # Save to MySQL in background
+        if full_response and session_id:
+            thread = threading.Thread(
+                target=save_to_mysql,
+                args=(session_id, question, full_response)
+            )
+            thread.daemon = True
+            thread.start()
+        
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        
+    except Exception as e:
+        print(f"Error in direct response: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+
+def needs_knowledge_base(question: str) -> bool:
+    """Determine if a question needs RAGFlow knowledge base"""
+    question_lower = question.lower().strip()
+    
+    # Simple greetings and general questions - use direct Ollama (fast)
+    simple_patterns = [
+        "hi", "hello", "hey", "what's up", "how are you",
+        "thanks", "thank you", "bye", "goodbye", "good morning",
+        "good afternoon", "good evening", "what can you do",
+        "help", "who are you"
+    ]
+    
+    for pattern in simple_patterns:
+        if question_lower == pattern or question_lower.startswith(pattern + " ") or question_lower.startswith(pattern + ","):
+            return False
+    
+    # Short messages under 10 chars are usually greetings
+    if len(question_lower) < 10:
+        return False
+    
+    # Everything else uses RAGFlow (has knowledge base)
+    return True
+
+
 @app.route("/")
 def index():
-    try:
-        create_workout_stats_table()
-        if "active_session_id" not in session:
-            default_session = get_or_create_default_session()
-            if default_session:
-                session["active_session_id"] = default_session
-                print(f"Initialized session with ID: {default_session}")
-        return render_template("index.html")
-    except Exception as e:
-        print(f"Error in index route: {e}")
-        return {"error": str(e)}, 500
+    # Create workout stats table on startup
+    create_workout_stats_table()
+
+    # Ensure there's always an active session
+    if "active_session_id" not in session:
+        default_session = get_or_create_default_session()
+        if default_session:
+            session["active_session_id"] = default_session
+            print(f"Initialized session with ID: {default_session}")
+    return render_template("index.html")
 
 
 @app.route("/ask", methods=["GET"])
 def ask():
-    """Handle chat questions"""
-    try:
-        question = request.args.get("question")
-        session_id = request.args.get("session_id") or session.get("active_session_id")
+    """Handle chat questions - hybrid approach"""
+    question = request.args.get("question")
+    session_id = request.args.get("session_id") or session.get("active_session_id")
 
-        if not question:
-            return jsonify({"error": "No question provided"}), 400
+    if not question:
+        return jsonify({"error": "No question provided"}), 400
 
+    # Auto-create session if none exists
+    if not session_id:
+        session_id = get_or_create_default_session()
         if not session_id:
-            session_id = get_or_create_default_session()
-            if not session_id:
-                return jsonify({"error": "Could not create session"}), 500
-            session["active_session_id"] = session_id
-
+            return jsonify({"error": "Could not create session"}), 500
         session["active_session_id"] = session_id
+
+    session["active_session_id"] = session_id
+    
+    # Hybrid: use direct Ollama for simple questions, RAGFlow for fitness questions
+    if needs_knowledge_base(question):
+        print(f"[HYBRID] Using RAGFlow for: {question[:50]}...")
         return Response(generate_response(question, session_id), mimetype="text/event-stream")
-    except Exception as e:
-        print(f"Error in ask route: {e}")
-        return jsonify({"error": str(e)}), 500
+    else:
+        print(f"[HYBRID] Using Direct Ollama for: {question[:50]}...")
+        return Response(generate_response_direct(question, session_id), mimetype="text/event-stream")
 
 
 @app.route("/workout-stats", methods=["GET"])

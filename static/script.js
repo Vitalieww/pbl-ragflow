@@ -389,11 +389,29 @@ async function sendMessage() {
   hideProgressSummary();
   const input = document.getElementById("user-input");
   const text = input.value.trim();
-  if (!text || !activeSessionId) {
-    if (!activeSessionId) {
-      showToast("⚠️ Please start a new session first", "error");
-    }
+  
+  if (!text) {
     return;
+  }
+  
+  // Auto-create session if none is active
+  if (!activeSessionId) {
+    try {
+      showToast("📝 Creating new session...", "success");
+      await createNewConversation();
+      
+      // Wait a moment for session to be fully activated
+      await new Promise(r => setTimeout(r, 300));
+      
+      if (!activeSessionId) {
+        showToast("⚠️ Could not create session. Please try again.", "error");
+        return;
+      }
+    } catch (error) {
+      console.error("Error auto-creating session:", error);
+      showToast("⚠️ Could not create session. Please try again.", "error");
+      return;
+    }
   }
 
   await sendMessageWithText(text);
@@ -410,7 +428,7 @@ async function sendMessageWithText(text) {
   const spinnerDiv = document.createElement("div");
   spinnerDiv.classList.add("message", "assistant", "waiting");
   spinnerDiv.innerHTML = `
-    <span>Analyzing your request...</span>
+    <span>Thinking...</span>
     <div class="spinner"></div>
   `;
   chatBox.appendChild(spinnerDiv);
@@ -424,53 +442,27 @@ async function sendMessageWithText(text) {
     let aiDiv = null;
 
     eventSource.onmessage = (event) => {
+      // Check for end of stream - handle both formats
       if (event.data === '"END"' || event.data === "END") {
         eventSource.close();
-
-        // Auto-speak if enabled
-        if (document.getElementById("auto-speak-toggle")?.checked) {
-          const utterance = new SpeechSynthesisUtterance(fullText);
-          speechSynthesis.speak(utterance);
-        }
-
-        // Save message and handle first message renaming
-        setTimeout(async () => {
-          try {
-            const checkRes = await fetch(`/sessions/${activeSessionId}/check`);
-            const checkData = await checkRes.json();
-
-            if (checkData.message_count === 0) {
-              await fetch(`/sessions/${activeSessionId}/save_message`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  user_message: text,
-                  assistant_message: fullText,
-                }),
-              });
-            }
-          } catch (err) {
-            console.error("Error checking/saving messages:", err);
-          }
-        }, 1000);
-
-        if (isFirstMessage && !renamedOnce) {
-          renamedOnce = true;
-          const newName = text.length > 30 ? text.slice(0, 30) + "…" : text;
-          setTimeout(async () => {
-            await renameSession(activeSessionId, newName);
-          }, 1500);
-        }
+        handleStreamEnd();
         return;
       }
 
       try {
         let data = event.data;
 
-        // Try to parse JSON, but if it fails, use the raw data
+        // Try to parse JSON
         try {
           const parsed = JSON.parse(data);
           data = parsed;
+          
+          // Check for done signal in JSON
+          if (data.done === true) {
+            eventSource.close();
+            handleStreamEnd();
+            return;
+          }
         } catch (e) {
           // If it's not JSON, keep it as string
         }
@@ -481,18 +473,20 @@ async function sendMessageWithText(text) {
         } else if (typeof data === "object") {
           // Extract text from object
           const textFromObject =
+            data.content ||
             data.message ||
             data.text ||
-            data.content ||
             data.response ||
-            JSON.stringify(data);
-          fullText += textFromObject;
+            "";
+          if (textFromObject) {
+            fullText += textFromObject;
+          }
         }
 
-        if (!aiDiv) {
+        if (!aiDiv && fullText) {
           chatBox.removeChild(spinnerDiv);
           aiDiv = displayMessage(fullText, "assistant");
-        } else {
+        } else if (aiDiv) {
           const now = new Date();
           const time = now.toLocaleTimeString("en-US", {
             hour: "2-digit",
@@ -500,7 +494,9 @@ async function sendMessageWithText(text) {
           });
 
           aiDiv.innerHTML = `
-            ${marked.parse(fullText)}
+            <div class="message-content-wrapper">
+              ${marked.parse(fullText)}
+            </div>
             <span class="message-timestamp">${time}</span>
             <div class="message-actions">
               <button onclick="copyMessage(this)" title="Copy">📋</button>
@@ -513,6 +509,44 @@ async function sendMessageWithText(text) {
         chatBox.scrollTop = chatBox.scrollHeight;
       } catch (err) {
         console.error("Error processing response:", err);
+      }
+    };
+    
+    // Helper function to handle stream end
+    function handleStreamEnd() {
+      // Auto-speak if enabled
+      if (document.getElementById("auto-speak-toggle")?.checked && fullText) {
+        const utterance = new SpeechSynthesisUtterance(fullText);
+        speechSynthesis.speak(utterance);
+      }
+
+      // Save message and handle first message renaming
+      setTimeout(async () => {
+        try {
+          const checkRes = await fetch(`/sessions/${activeSessionId}/check`);
+          const checkData = await checkRes.json();
+
+          if (checkData.message_count === 0) {
+            await fetch(`/sessions/${activeSessionId}/save_message`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                user_message: text,
+                assistant_message: fullText,
+              }),
+            });
+          }
+        } catch (err) {
+          console.error("Error checking/saving messages:", err);
+        }
+      }, 1000);
+
+      if (isFirstMessage && !renamedOnce) {
+        renamedOnce = true;
+        const newName = text.length > 30 ? text.slice(0, 30) + "…" : text;
+        setTimeout(async () => {
+          await renameSession(activeSessionId, newName);
+        }, 1500);
       }
     };
 
